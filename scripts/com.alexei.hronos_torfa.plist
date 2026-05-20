@@ -8,8 +8,7 @@
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/env</string>
-        <string>python3</string>
+        <string>/Library/Frameworks/Python.framework/Versions/3.12/bin/python3</string>
         <string>/Users/alexei/Claude_v1/run_daily.py</string>
     </array>
 
