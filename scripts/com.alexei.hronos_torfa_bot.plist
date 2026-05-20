@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.alexei.hronos_torfa_bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>python3</string>
+        <string>/Users/alexei/Claude_v1/bot.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/alexei/Claude_v1</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/alexei/Claude_v1/logs/launchd_bot.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/alexei/Claude_v1/logs/launchd_bot.err.log</string>
+</dict>
+</plist>

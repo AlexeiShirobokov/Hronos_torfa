@@ -1,0 +1,29 @@
+# Секреты и данные — не пушим в репозиторий
+.env
+.env.local
+*.env
+
+# Локальные данные / результаты / логи
+input/
+output/
+logs/
+state/
+
+# Пользовательские заметки
+AGENTS.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+._*
+
+# IDE
+.vscode/
+.idea/
