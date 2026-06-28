@@ -137,7 +137,13 @@ def to_metrics(aggr: dict) -> dict:
     idle = aggr["idle"]
 
     def _d(x):
-        return x.isoformat() if hasattr(x, "isoformat") else (str(x) if x is not None else None)
+        if x is None or (hasattr(x, "__class__") and pd.isna(x)):
+            return None
+        if hasattr(x, "date"):        # pandas Timestamp / datetime → только дата
+            return x.date().isoformat()
+        if hasattr(x, "isoformat"):   # datetime.date
+            return x.isoformat()
+        return str(x)
 
     denom = (tm["Рейсы"] * tm["Кузов_м3_сред"]).sum()
     overall_util = (tm["Объем_м3"].sum() / denom * 100) if denom else None
