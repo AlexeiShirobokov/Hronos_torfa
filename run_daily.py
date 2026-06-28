@@ -1,28 +1,28 @@
-"""Оркестратор: fetch → consolidate → build_pdf → уведомить бота (или отправить).
-
-Запускается launchd-ом каждый час в xx:10 с 9 до 19.
-Поведение по умолчанию: после сборки PDF/XLSX отправляет уведомление в бот
-с кнопкой «Подтвердить рассылку». Авто-отправка писем выполняется ТОЛЬКО
-после нажатия кнопки или через /confirm в боте.
+"""Оркестратор: fetch → consolidate → build_xlsx → explain → алерты → send_email (авто).
+Запускается launchd-ом каждый час в xx:10 (6–22). Доставка — только email.
 """
 from __future__ import annotations
-import json, os, subprocess, sys, time, urllib.parse, urllib.request
+import json, smtplib, ssl, subprocess, sys, time
 from datetime import datetime
+from email.message import EmailMessage
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
 LOGS = BASE / "logs"
 STATE = BASE / "state"
 PY = sys.executable
+ALERT_TO = "alexeimvc@gmail.com"
 
 
 def load_env() -> dict:
     p = BASE / ".env"
     out = {}
-    if not p.exists(): return out
+    if not p.exists():
+        return out
     for raw in p.read_text(encoding="utf-8").splitlines():
         s = raw.strip()
-        if not s or s.startswith("#") or "=" not in s: continue
+        if not s or s.startswith("#") or "=" not in s:
+            continue
         k, v = s.split("=", 1)
         out[k.strip()] = v.strip().strip('"').strip("'")
     return out
@@ -40,56 +40,70 @@ def run(script: str) -> tuple[int, str]:
     log(f"→ {script}")
     p = subprocess.run([PY, str(BASE / script)], cwd=str(BASE),
                        capture_output=True, text=True)
-    if p.stdout: log(p.stdout.strip()[:2000])
-    if p.stderr: log("STDERR: " + p.stderr.strip()[:2000])
+    if p.stdout:
+        log(p.stdout.strip()[:2000])
+    if p.stderr:
+        log("STDERR: " + p.stderr.strip()[:2000])
     log(f"   exit={p.returncode}")
     return p.returncode, p.stdout
 
 
-def tg_request(token: str, method: str, **params) -> dict:
-    url = f"https://api.telegram.org/bot{token}/{method}"
-    data = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None}).encode()
-    req = urllib.request.Request(url, data=data)
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read().decode())
+def _send_alert_email(env: dict, subject: str, body: str) -> None:
+    msg = EmailMessage()
+    msg["From"] = env.get("YANDEX_LOGIN", ALERT_TO)
+    msg["To"] = ALERT_TO
+    msg["Subject"] = f"[hronos_torfa] {subject}"
+    msg.set_content(body)
+    host = env.get("SMTP_HOST", "smtp.yandex.ru")
+    port = int(env.get("SMTP_PORT", "465"))
+    login = env.get("SMTP_LOGIN") or env.get("YANDEX_LOGIN")
+    password = env.get("SMTP_PASSWORD") or env.get("YANDEX_APP_PASSWORD")
+    ctx = ssl.create_default_context()
+    with smtplib.SMTP_SSL(host, port, context=ctx, timeout=60) as s:
+        s.login(login, password)
+        s.send_message(msg)
 
 
-def notify_bot(env: dict, report_date: str, xlsx: Path | None, pdf: Path | None) -> None:
-    token = env.get("BOT_TOKEN") or env.get("api_token")
-    chat_id = env.get("BOT_ADMIN_CHAT_ID") or _read_admin_chat()
-    if not token or not chat_id:
-        log("[WARN] нет BOT_TOKEN или BOT_ADMIN_CHAT_ID — уведомление не отправляется")
+def alert(env: dict, subject: str, body: str, key: str) -> None:
+    """Email-алерт с анти-спамом: один и тот же key за дату отправляется один раз."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    full = f"{today}|{key}"
+    sent_p = STATE / "alerts_sent.json"
+    sent = []
+    if sent_p.exists():
+        try:
+            sent = json.loads(sent_p.read_text(encoding="utf-8"))
+        except Exception:
+            sent = []
+    sent = [k for k in sent if k.startswith(today)]  # чистим прошлые даты
+    if full in sent:
+        log(f"[alert] подавлен дубль: {key}")
         return
-    text = (f"📦 Отчёт за <b>{report_date}</b> готов.\n"
-            f"• XLSX: {xlsx.name if xlsx else '—'}\n"
-            f"• PDF: {pdf.name if pdf else '—'}\n\n"
-            f"Подтвердить рассылку по recipients.txt?")
-    kb = {
-        "inline_keyboard": [[
-            {"text": "✅ Отправить", "callback_data": "send_now"},
-            {"text": "✖️ Отмена",    "callback_data": "cancel"},
-        ]]
-    }
     try:
-        r = tg_request(token, "sendMessage",
-                       chat_id=chat_id, text=text, parse_mode="HTML",
-                       reply_markup=json.dumps(kb))
-        log(f"[INFO] уведомление отправлено (msg id={r.get('result',{}).get('message_id')})")
+        _send_alert_email(env, subject, body)
+        log(f"[alert] отправлен: {key}")
     except Exception as e:
-        log(f"[ERR] не удалось уведомить бот: {e!r}")
+        log(f"[alert][ERR] {key}: {e!r}")
+        return
+    sent.append(full)
+    sent_p.write_text(json.dumps(sent, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _read_admin_chat() -> str | None:
-    p = STATE / "admin_chat_id.txt"
-    return p.read_text(encoding="utf-8").strip() if p.exists() else None
+def _report_date() -> str:
+    rd = datetime.now().strftime("%Y-%m-%d")
+    meta = LOGS / "last_fetch.meta"
+    if meta.exists():
+        for line in meta.read_text(encoding="utf-8").splitlines():
+            if line.startswith("date="):
+                rd = line.split("=", 1)[1].strip()
+    return rd
 
 
-def find_latest():
-    xlsx = sorted((BASE / "output").glob("Хронометраж_транспортировки_торфов_*.xlsx"),
-                  key=lambda p: p.stat().st_mtime, reverse=True)
-    pdf = sorted((BASE / "output").glob("Аналитика_хронометраж_торфов_*.pdf"),
-                 key=lambda p: p.stat().st_mtime, reverse=True)
-    return (xlsx[0] if xlsx else None, pdf[0] if pdf else None)
+def _write_state(d: dict) -> None:
+    STATE.mkdir(parents=True, exist_ok=True)
+    (STATE / "last_run.json").write_text(
+        json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def main() -> int:
@@ -97,50 +111,57 @@ def main() -> int:
     LOGS.mkdir(parents=True, exist_ok=True)
     env = load_env()
     t0 = time.time()
-    log("="*60)
+    log("=" * 60)
     log("RUN_DAILY START")
 
-    code = 0
     rc, _ = run("fetch_kronos_torf.py")
     if rc != 0:
-        log("[WARN] fetch завершился с ошибкой, продолжаю с локальными вложениями")
-        code = rc
+        log("[WARN] fetch с ошибкой, продолжаю с локальными вложениями")
+
+    rd = _report_date()
+    if rd != datetime.now().strftime("%Y-%m-%d"):
+        alert(env, "нет свежих данных",
+              f"Дата отчёта {rd} не сегодняшняя — возможно, не пришли новые письма.",
+              key=f"stale_data:{rd}")
+
     rc, _ = run("consolidate.py")
     if rc != 0:
-        log(f"[ERR] consolidate завершился с кодом {rc}")
+        alert(env, "сбой consolidate", f"consolidate.py exit={rc}", key=f"fail_consolidate:{rd}")
         _write_state({"ok": False, "step": "consolidate", "exit": rc,
                       "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
         return 10
-    rc, _ = run("build_pdf.py")
+
+    rc, _ = run("build_xlsx.py")
     if rc != 0:
-        log(f"[ERR] build_pdf завершился с кодом {rc}")
-        _write_state({"ok": False, "step": "build_pdf", "exit": rc,
+        alert(env, "сбой build_xlsx", f"build_xlsx.py exit={rc}", key=f"fail_build_xlsx:{rd}")
+        _write_state({"ok": False, "step": "build_xlsx", "exit": rc,
                       "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
         return 11
 
-    xlsx, pdf = find_latest()
-    # дата отчёта
-    rd = datetime.now().strftime("%Y-%m-%d")
-    meta = LOGS / "last_fetch.meta"
-    if meta.exists():
-        for line in meta.read_text(encoding="utf-8").splitlines():
-            if line.startswith("date="): rd = line.split("=", 1)[1].strip()
+    # метрики уже записаны build_xlsx → state/last_metrics.json
+    rc, _ = run("explain.py")
+    if rc != 0:
+        log(f"[WARN] explain.py exit={rc} — продолжаю без записки")
 
-    notify_bot(env, rd, xlsx, pdf)
+    # email-алерты об аномалиях
+    alerts_p = STATE / "last_alerts.json"
+    if alerts_p.exists():
+        try:
+            for a in json.loads(alerts_p.read_text(encoding="utf-8")):
+                alert(env, f"аномалия: {a['type']}", a["text"], key=f"{a['type']}:{rd}")
+        except Exception as e:
+            log(f"[WARN] чтение last_alerts.json: {e!r}")
+
+    # авто-рассылка
+    rc, _ = run("send_email.py")
+    if rc != 0:
+        alert(env, "сбой отправки письма", f"send_email.py exit={rc}", key=f"fail_send:{rd}")
 
     _write_state({"ok": True, "report_date": rd,
-                  "xlsx": str(xlsx) if xlsx else None,
-                  "pdf": str(pdf) if pdf else None,
-                  "pending_send": True,
                   "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                   "duration_sec": round(time.time() - t0, 1)})
     log(f"RUN_DAILY DONE за {round(time.time()-t0,1)}s")
-    return code
-
-
-def _write_state(d: dict) -> None:
-    (STATE / "last_run.json").write_text(
-        json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
+    return 0
 
 
 if __name__ == "__main__":
