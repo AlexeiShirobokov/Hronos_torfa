@@ -114,7 +114,11 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
                                         Объем_м3=("Обьем работ, м3", "sum"))
                .reindex(range(24), fill_value=0).reset_index())
 
-    idle = (df[df["Передел"].astype(str).str.strip() == "простой"]
+    # простои за отчётную дату (чтобы порог «ч/смену» был осмысленным,
+    # а не кумулятивом за весь период)
+    rd_ts = pd.to_datetime(report_date, errors="coerce")
+    idle_src = df[df["Передел"].astype(str).str.strip() == "простой"]
+    idle = (idle_src[idle_src["Дата. Факт"] == rd_ts]
             .groupby(["Подразделение"]).size().reset_index(name="Часов простоя"))
 
     return {
