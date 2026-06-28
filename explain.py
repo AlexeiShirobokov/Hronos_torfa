@@ -58,13 +58,18 @@ def detect_anomalies(m: dict, thresholds: dict | None = None) -> list[dict]:
             out.append({"type": "idle",
                         "text": f"Простои в «{i['unit']}»: {i['hours']} ч "
                                 f"(порог {th['idle']:.0f} ч/смену)."})
+    # сравниваем ОТЧЁТНУЮ дату с днём перед ней (а не с частичным «сегодня»,
+    # который мог попасть в by_date с утренним fetch)
     bd = m.get("by_date", [])
-    if len(bd) >= 2 and bd[-2]["volume"] > 0:
-        drop = (bd[-2]["volume"] - bd[-1]["volume"]) / bd[-2]["volume"] * 100
+    rd = m.get("report_date")
+    idx = next((i for i, d in enumerate(bd) if d.get("date") == rd), None)
+    if idx is not None and idx >= 1 and bd[idx - 1]["volume"] > 0:
+        prev, cur = bd[idx - 1], bd[idx]
+        drop = (prev["volume"] - cur["volume"]) / prev["volume"] * 100
         if drop > th["drop"]:
             out.append({"type": "volume_drop",
-                        "text": f"Объём упал на {drop:.0f}% к {bd[-2]['date']} "
-                                f"({_fmt_int(bd[-2]['volume'])} → {_fmt_int(bd[-1]['volume'])} м³)."})
+                        "text": f"Объём упал на {drop:.0f}% к {prev['date']} "
+                                f"({_fmt_int(prev['volume'])} → {_fmt_int(cur['volume'])} м³)."})
     return out
 
 

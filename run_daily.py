@@ -3,7 +3,7 @@
 """
 from __future__ import annotations
 import json, smtplib, ssl, subprocess, sys, time
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -119,9 +119,16 @@ def main() -> int:
         log("[WARN] fetch с ошибкой, продолжаю с локальными вложениями")
 
     rd = _report_date()
-    if rd != datetime.now().strftime("%Y-%m-%d"):
+    # отчётная дата штатно отстаёт на день (письма за вчерашнюю смену);
+    # алерт только если данные старше вчерашних (2+ дня) — значит письма не приходят
+    try:
+        rd_date = datetime.strptime(rd, "%Y-%m-%d").date()
+        stale = rd_date < date.today() - timedelta(days=1)
+    except ValueError:
+        stale = False
+    if stale:
         alert(env, "нет свежих данных",
-              f"Дата отчёта {rd} не сегодняшняя — возможно, не пришли новые письма.",
+              f"Дата отчёта {rd} устарела (старше вчерашней) — возможно, не приходят новые письма.",
               key=f"stale_data:{rd}")
 
     rc, _ = run("consolidate.py")
