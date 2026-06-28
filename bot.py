@@ -15,6 +15,8 @@
 Зависимости: только стандартная библиотека.
 Polling Telegram Bot API (long polling).
 """
+# DEPRECATED (Фаза 1): Telegram убран из пайплайна — доставка и алерты идут по email.
+# launchd-задача бота снята. Оставлено для истории; удалить после Фазы 2.
 from __future__ import annotations
 import json, os, subprocess, sys, time, urllib.parse, urllib.request
 from datetime import datetime

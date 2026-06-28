@@ -73,13 +73,14 @@ def attach_file(msg: EmailMessage, path: Path) -> None:
 
 
 def build_message(env: dict, recipients: list[str], xlsx: Path | None,
-                  html_body: str, text_body: str) -> EmailMessage:
+                  html_body: str, text_body: str,
+                  report_date: str | None = None) -> EmailMessage:
     sender = env["YANDEX_LOGIN"]
     msg = EmailMessage()
-    today = datetime.now().strftime("%Y-%m-%d")
+    rd = report_date or datetime.now().strftime("%Y-%m-%d")
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
-    msg["Subject"] = f"Хронометраж торфов — отчёт за {today}"
+    msg["Subject"] = f"Хронометраж торфов — отчёт за {rd}"
     msg.set_content(text_body)                       # text/plain (фолбэк)
     msg.add_alternative(html_body, subtype="html")   # text/html
     if xlsx and xlsx.exists():
@@ -150,7 +151,7 @@ def main() -> int:
     html = email_html.build_html(metrics, note, alerts)
     text = email_html.build_text(metrics, note, alerts)
 
-    msg = build_message(env, rcpts, xlsx, html, text)
+    msg = build_message(env, rcpts, xlsx, html, text, metrics.get("report_date"))
     try:
         send(env, msg)
     except Exception as e:

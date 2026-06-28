@@ -7,6 +7,9 @@ output/Аналитика_хронометраж_торфов_<дата>.pdf.
 ABC-анализ (общий и по подразделениям), водителей по подразделениям,
 выводы/рекомендации и чек-лист начальника участка.
 """
+# DEPRECATED (Фаза 1): не используется в пайплайне — отчёт теперь HTML-письмо +
+# Excel с листами аналитики (analytics.py / build_xlsx.py / email_html.py).
+# Оставлено для истории; удалить после Фазы 2.
 from __future__ import annotations
 import json, math, os, sys, textwrap
 from pathlib import Path
