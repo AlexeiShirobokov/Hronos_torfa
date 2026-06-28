@@ -15,7 +15,8 @@ class TestBuildXlsx(unittest.TestCase):
         aggr = analytics.compute(csv, "2026-06-28")
         build_xlsx.write_sheets(aggr, book)
         wb = load_workbook(book)
-        for s in ("Свод_подразделения", "Свод_даты", "ABC_водители", "Парк_марки", "Парк_инв"):
+        for s in ("Свод_подразделения", "Свод_даты", "ABC_водители", "Парк_марки",
+                  "Парк_инв", "Машины_дни", "Машины_смены", "Машины_час_Торф"):
             self.assertIn(s, wb.sheetnames)
 
 

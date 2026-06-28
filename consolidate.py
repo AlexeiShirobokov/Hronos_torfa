@@ -41,6 +41,37 @@ def _clean(v):
     return v
 
 
+def _norm_time(v):
+    """Единый формат времени «ЧЧ:ММ» из мешанины источника:
+    '21:00:00', '1900-01-01 09:00:00', '9:30', Excel-доля суток."""
+    if v is None:
+        return None
+    try:
+        if pd.isna(v):
+            return None
+    except (TypeError, ValueError):
+        pass
+    s = str(v).strip()
+    if not s or s.lower() == "nan":
+        return None
+    # datetime-подобное «… ЧЧ:ММ:СС» — берём часть после пробела
+    if " " in s and ":" in s.split(" ", 1)[1]:
+        s = s.split(" ", 1)[1]
+    m = re.match(r"^(\d{1,2}):(\d{2})", s)
+    if m:
+        h = int(m.group(1)) % 24
+        return f"{h:02d}:{m.group(2)}"
+    # число как доля суток (Excel)
+    try:
+        f = float(s.replace(",", "."))
+        if 0 <= f < 2:
+            total = round((f % 1) * 24 * 60)
+            return f"{(total // 60) % 24:02d}:{total % 60:02d}"
+    except ValueError:
+        pass
+    return s
+
+
 def main() -> int:
     if not ATT.exists():
         print(f"[ERR] нет папки с вложениями: {ATT}"); return 2
@@ -81,6 +112,8 @@ def main() -> int:
     full["Подразделение"] = full["Подразделение"].apply(
         lambda x: x.strip() if isinstance(x, str) else x
     )
+    # единый формат времени ЧЧ:ММ (убираем '1900-01-01' и секунды)
+    full["Время"] = full["Время"].apply(_norm_time)
 
     meta_file = LOGS / "last_fetch.meta"
     report_date = datetime.now().strftime("%Y-%m-%d")

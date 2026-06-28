@@ -18,6 +18,22 @@ def _abc_class(p: float) -> str:
     return "C"
 
 
+# материалы транспортировки (передел → краткое имя)
+TRANSPORT_PEREDELY = {
+    "Транспортировка торфов": "Торф",
+    "Транспортировка песков": "Песок",
+}
+DAY_SHIFT_START = 8    # дневная смена 08:00–19:59
+NIGHT_SHIFT_START = 20  # ночная смена 20:00–07:59
+
+
+def _shift(hour) -> str | None:
+    if hour is None or (isinstance(hour, float) and hour != hour):
+        return None
+    h = int(hour)
+    return "Дневная" if DAY_SHIFT_START <= h < NIGHT_SHIFT_START else "Ночная"
+
+
 def _to_hour(x):
     if pd.isna(x) or x in (None, "", " "):
         return None
@@ -121,6 +137,32 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
     idle = (idle_src[idle_src["Дата. Факт"] == rd_ts]
             .groupby(["Подразделение"]).size().reset_index(name="Часов простоя"))
 
+    # ── Транспортировка торф+песок: машины по дням / часам / сменам ──
+    transport = df[df["Передел"].astype(str).str.strip().isin(TRANSPORT_PEREDELY)].copy()
+    transport["Материал"] = transport["Передел"].astype(str).str.strip().map(TRANSPORT_PEREDELY)
+    transport["Смена"] = transport["Час"].apply(_shift)
+
+    mach_by_day = (transport.groupby([transport["Дата. Факт"].dt.date, "Материал"])
+                   .agg(Машины=("Количство машин, шт", "sum")).reset_index()
+                   .rename(columns={"Дата. Факт": "Дата"}))
+    mach_by_hour = (transport.dropna(subset=["Час"])
+                    .groupby(["Час", "Материал"])
+                    .agg(Машины=("Количство машин, шт", "sum")).reset_index())
+    mach_by_shift = (transport.dropna(subset=["Смена"])
+                     .groupby([transport["Дата. Факт"].dt.date, "Смена", "Материал"])
+                     .agg(Машины=("Количство машин, шт", "sum")).reset_index()
+                     .rename(columns={"Дата. Факт": "Дата"}))
+    # пивоты «час × дата» по материалам (как ручная сводка, но чисто)
+    mach_hour_pivot = {}
+    for mat in ("Торф", "Песок"):
+        sub = transport[(transport["Материал"] == mat) & transport["Час"].notna()]
+        if len(sub):
+            piv = (sub.pivot_table(index="Час", columns=sub["Дата. Факт"].dt.date,
+                                   values="Количство машин, шт", aggfunc="sum")
+                   .reindex(range(24)))
+            piv.index = [f"{h:02d}:00" for h in piv.index]
+            mach_hour_pivot[mat] = piv.reset_index().rename(columns={"index": "Час"})
+
     return {
         "report_date": report_date,
         "date_min": df["Дата. Факт"].min(),
@@ -130,6 +172,8 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
         "drivers": drv, "truck_mark": truck_mark, "truck_inv": truck_inv,
         "idle": idle, "units": sorted(trans["Подразделение"].unique().tolist()),
         "n_rows": int(len(df)), "n_trans": int(len(trans)),
+        "mach_by_day": mach_by_day, "mach_by_hour": mach_by_hour,
+        "mach_by_shift": mach_by_shift, "mach_hour_pivot": mach_hour_pivot,
     }
 
 
@@ -176,6 +220,16 @@ def to_metrics(aggr: dict) -> dict:
         "idle": [{"unit": r["Подразделение"], "hours": int(r["Часов простоя"])}
                  for _, r in idle.iterrows()],
         "abc": {k: int(abc_counts.get(k, 0)) for k in ("A", "B", "C")},
+        "mach_by_day": [{"date": _d(r["Дата"]), "material": r["Материал"],
+                         "machines": int(round(float(r["Машины"])))}
+                        for _, r in aggr["mach_by_day"].iterrows()],
+        "mach_by_hour": [{"hour": f"{int(r['Час']):02d}:00", "material": r["Материал"],
+                          "machines": int(round(float(r["Машины"])))}
+                         for _, r in aggr["mach_by_hour"].iterrows()],
+        "mach_by_shift": [{"date": _d(r["Дата"]), "shift": r["Смена"],
+                           "material": r["Материал"],
+                           "machines": int(round(float(r["Машины"])))}
+                          for _, r in aggr["mach_by_shift"].iterrows()],
     }
 
 

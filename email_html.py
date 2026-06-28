@@ -56,6 +56,36 @@ def _trend_table(m: dict, days: int = 7) -> str:
     return f'<table style="border-collapse:collapse;margin:8px 0;">{head}{rows}</table>'
 
 
+def _shift_rows(m: dict) -> list[dict]:
+    """Машины по материалу×смене за отчётную дату."""
+    rd = m.get("report_date")
+    rows = [r for r in m.get("mach_by_shift", []) if r.get("date") == rd]
+    agg: dict = {}
+    for r in rows:
+        agg.setdefault(r["material"], {"Дневная": 0, "Ночная": 0})
+        agg[r["material"]][r["shift"]] = r["machines"]
+    return [{"material": mat, "day": v["Дневная"], "night": v["Ночная"],
+             "total": v["Дневная"] + v["Ночная"]} for mat, v in agg.items()]
+
+
+def _shift_table(m: dict) -> str:
+    rows = _shift_rows(m)
+    if not rows:
+        return ""
+    head = ("<tr>" + "".join(
+        f'<th style="padding:6px 10px;background:#305496;color:#fff;'
+        f'border:1px solid #d0d7de;text-align:left;">{h}</th>'
+        for h in ("Материал", "Дневная", "Ночная", "Всего")) + "</tr>")
+    body = "".join(
+        "<tr>" + "".join(
+            f'<td style="padding:6px 10px;border:1px solid #d0d7de;">{c}</td>'
+            for c in (escape(r["material"]), _fmt_int(r["day"]),
+                      _fmt_int(r["night"]), _fmt_int(r["total"]))) + "</tr>"
+        for r in rows)
+    return (f'<h3>Машины по сменам · {escape(str(m["report_date"]))}</h3>'
+            f'<table style="border-collapse:collapse;margin:8px 0;">{head}{body}</table>')
+
+
 def _alerts_block(alerts: list[dict]) -> str:
     if not alerts:
         return '<p style="color:#1a7f37;">Существенных отклонений KPI не зафиксировано.</p>'
@@ -80,6 +110,7 @@ def build_html(m: dict, note: str, alerts: list[dict]) -> str:
         f'{_alerts_block(alerts)}'
         f'<h3>Пояснительная записка</h3>{note_html}'
         f'<h3>По подразделениям</h3>{_unit_table(m)}'
+        f'{_shift_table(m)}'
         f'<h3>Динамика (последние дни)</h3>{_trend_table(m)}'
         '<p style="color:#8c959f;font-size:12px;margin-top:16px;">'
         'Детализация — во вложении (Excel: реестр + листы аналитики). '
@@ -104,5 +135,11 @@ def build_text(m: dict, note: str, alerts: list[dict]) -> str:
     for u in m["by_unit"]:
         lines.append(f"  {u['unit']}: {_fmt_int(u['volume'])} м³ ({u['share_pct']}%), "
                      f"рейсов {_fmt_int(u['trips'])}")
+    srows = _shift_rows(m)
+    if srows:
+        lines += ["", f"Машины по сменам ({m['report_date']}):"]
+        for r in srows:
+            lines.append(f"  {r['material']}: день {_fmt_int(r['day'])}, "
+                         f"ночь {_fmt_int(r['night'])}, всего {_fmt_int(r['total'])}")
     lines += ["", "Детализация — во вложении (Excel)."]
     return "\n".join(lines)

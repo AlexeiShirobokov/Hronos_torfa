@@ -27,3 +27,6 @@ venv/
 # IDE
 .vscode/
 .idea/
+
+# временные файлы тестов
+tests/_tmp/

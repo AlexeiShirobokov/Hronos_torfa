@@ -20,6 +20,8 @@ SHEETS = {
     "ABC_водители": "drivers",
     "Парк_марки": "truck_mark",
     "Парк_инв": "truck_inv",
+    "Машины_дни": "mach_by_day",
+    "Машины_смены": "mach_by_shift",
 }
 
 
@@ -28,6 +30,10 @@ def write_sheets(aggr: dict, book_path: Path) -> None:
                         if_sheet_exists="replace") as xw:
         for sheet, key in SHEETS.items():
             aggr[key].to_excel(xw, sheet_name=sheet, index=False)
+        # пивоты «час × дата» по материалам (как ручная сводка, но чисто)
+        for mat, piv in aggr.get("mach_hour_pivot", {}).items():
+            sheet = f"Машины_час_{mat}"[:31]
+            piv.to_excel(xw, sheet_name=sheet, index=False)
 
 
 def _report_date() -> str:
