@@ -56,13 +56,11 @@ def load_recipients() -> list[str]:
     return ord_
 
 
-def find_latest_outputs() -> tuple[Path | None, Path | None]:
-    """Найти самые свежие xlsx и pdf в /output."""
+def find_latest_xlsx() -> Path | None:
+    """Найти самую свежую книгу реестра в /output."""
     xlsx = sorted(OUT.glob("Хронометраж_транспортировки_торфов_*.xlsx"),
                   key=lambda p: p.stat().st_mtime, reverse=True)
-    pdf = sorted(OUT.glob("Аналитика_хронометраж_торфов_*.pdf"),
-                 key=lambda p: p.stat().st_mtime, reverse=True)
-    return (xlsx[0] if xlsx else None, pdf[0] if pdf else None)
+    return xlsx[0] if xlsx else None
 
 
 def attach_file(msg: EmailMessage, path: Path) -> None:
@@ -74,28 +72,18 @@ def attach_file(msg: EmailMessage, path: Path) -> None:
                        filename=path.name)
 
 
-def build_message(env: dict, recipients: list[str],
-                  xlsx: Path | None, pdf: Path | None,
-                  body_extra: str = "") -> EmailMessage:
+def build_message(env: dict, recipients: list[str], xlsx: Path | None,
+                  html_body: str, text_body: str) -> EmailMessage:
     sender = env["YANDEX_LOGIN"]
     msg = EmailMessage()
     today = datetime.now().strftime("%Y-%m-%d")
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
     msg["Subject"] = f"Хронометраж торфов — отчёт за {today}"
-    body = (
-        f"Автоматическая рассылка по результатам сборки реестра и аналитики.\n"
-        f"Сформировано: {datetime.now():%Y-%m-%d %H:%M}\n\n"
-        f"Во вложении:\n"
-        f"  • Консолидированный реестр (xlsx)\n"
-        f"  • Аналитика по подразделениям, водителям, грузоподъёмности (pdf)\n"
-    )
-    if body_extra:
-        body += "\n" + body_extra + "\n"
-    body += "\n— @alexeids_bot"
-    msg.set_content(body)
-    if xlsx and xlsx.exists(): attach_file(msg, xlsx)
-    if pdf and pdf.exists():   attach_file(msg, pdf)
+    msg.set_content(text_body)                       # text/plain (фолбэк)
+    msg.add_alternative(html_body, subtype="html")   # text/html
+    if xlsx and xlsx.exists():
+        attach_file(msg, xlsx)
     return msg
 
 
@@ -119,12 +107,11 @@ def log(msg: str) -> None:
 
 
 def main() -> int:
+    import json
+    import email_html
     ap = argparse.ArgumentParser()
-    ap.add_argument("--check", action="store_true",
-                    help="только проверить SMTP-логин")
+    ap.add_argument("--check", action="store_true", help="только проверить SMTP-логин")
     ap.add_argument("--xlsx", type=Path, help="путь к xlsx (по умолчанию — последний)")
-    ap.add_argument("--pdf", type=Path, help="путь к pdf (по умолчанию — последний)")
-    ap.add_argument("--note", default="", help="дополнительный текст в теле письма")
     args = ap.parse_args()
 
     env = load_env()
@@ -149,26 +136,27 @@ def main() -> int:
         log(f"[ERR] список получателей пуст: {RCPT_FILE}")
         return 4
 
-    xlsx = args.xlsx or None
-    pdf = args.pdf or None
-    if not xlsx or not pdf:
-        a, b = find_latest_outputs()
-        xlsx = xlsx or a
-        pdf = pdf or b
-    if not xlsx and not pdf:
-        log(f"[ERR] не найдены файлы в {OUT}")
+    xlsx = args.xlsx or find_latest_xlsx()
+    if not xlsx:
+        log(f"[ERR] не найден xlsx в {OUT}")
         return 5
 
-    msg = build_message(env, rcpts, xlsx, pdf, args.note)
+    state = BASE / "state"
+    metrics = json.loads((state / "last_metrics.json").read_text(encoding="utf-8"))
+    note_p = state / "last_note.txt"
+    note = note_p.read_text(encoding="utf-8") if note_p.exists() else ""
+    alerts_p = state / "last_alerts.json"
+    alerts = json.loads(alerts_p.read_text(encoding="utf-8")) if alerts_p.exists() else []
+    html = email_html.build_html(metrics, note, alerts)
+    text = email_html.build_text(metrics, note, alerts)
+
+    msg = build_message(env, rcpts, xlsx, html, text)
     try:
         send(env, msg)
     except Exception as e:
         log(f"[ERR] отправка не удалась: {e!r}")
         return 6
-    sizes = []
-    if xlsx and xlsx.exists(): sizes.append(f"{xlsx.name}={xlsx.stat().st_size}b")
-    if pdf and pdf.exists():   sizes.append(f"{pdf.name}={pdf.stat().st_size}b")
-    log(f"[OK] отправлено {len(rcpts)} получателям: {', '.join(rcpts)}  |  {' ; '.join(sizes)}")
+    log(f"[OK] отправлено {len(rcpts)} получателям: {', '.join(rcpts)}  |  {xlsx.name}")
     return 0
 
 
