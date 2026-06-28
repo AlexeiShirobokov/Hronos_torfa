@@ -17,6 +17,9 @@
 
     <key>StartCalendarInterval</key>
     <array>
+        <dict><key>Hour</key><integer>6</integer> <key>Minute</key><integer>10</integer></dict>
+        <dict><key>Hour</key><integer>7</integer> <key>Minute</key><integer>10</integer></dict>
+        <dict><key>Hour</key><integer>8</integer> <key>Minute</key><integer>10</integer></dict>
         <dict><key>Hour</key><integer>9</integer> <key>Minute</key><integer>10</integer></dict>
         <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>10</integer></dict>
         <dict><key>Hour</key><integer>11</integer><key>Minute</key><integer>10</integer></dict>
@@ -28,6 +31,9 @@
         <dict><key>Hour</key><integer>17</integer><key>Minute</key><integer>10</integer></dict>
         <dict><key>Hour</key><integer>18</integer><key>Minute</key><integer>10</integer></dict>
         <dict><key>Hour</key><integer>19</integer><key>Minute</key><integer>10</integer></dict>
+        <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>10</integer></dict>
+        <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>10</integer></dict>
+        <dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>10</integer></dict>
     </array>
 
     <key>StandardOutPath</key>
