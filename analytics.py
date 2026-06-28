@@ -130,12 +130,23 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
                                         Объем_м3=("Обьем работ, м3", "sum"))
                .reindex(range(24), fill_value=0).reset_index())
 
-    # простои за отчётную дату (чтобы порог «ч/смену» был осмысленным,
-    # а не кумулятивом за весь период)
+    # простои: за отчётную дату + базовая линия (медиана до 7 дней до неё),
+    # чтобы алертить относительный скачок, а не абсолют
     rd_ts = pd.to_datetime(report_date, errors="coerce")
-    idle_src = df[df["Передел"].astype(str).str.strip() == "простой"]
-    idle = (idle_src[idle_src["Дата. Факт"] == rd_ts]
-            .groupby(["Подразделение"]).size().reset_index(name="Часов простоя"))
+    rd_date = rd_ts.date() if pd.notna(rd_ts) else None
+    idle_src = df[df["Передел"].astype(str).str.strip() == "простой"].copy()
+    idle_src["Дата"] = idle_src["Дата. Факт"].dt.date
+    idle_daily = (idle_src.groupby(["Подразделение", "Дата"]).size()
+                  .reset_index(name="Часов простоя"))
+    idle_rows = []
+    for unit, g in idle_daily.groupby("Подразделение"):
+        today_h = int(g.loc[g["Дата"] == rd_date, "Часов простоя"].sum())
+        prior = g.loc[g["Дата"] < rd_date].sort_values("Дата")["Часов простоя"].tail(7)
+        baseline = float(prior.median()) if len(prior) else 0.0
+        if today_h > 0 or baseline > 0:
+            idle_rows.append({"Подразделение": unit, "Часов простоя": today_h,
+                              "База_медиана": round(baseline, 1)})
+    idle = pd.DataFrame(idle_rows, columns=["Подразделение", "Часов простоя", "База_медиана"])
 
     # ── Транспортировка торф+песок: машины по дням / часам / сменам ──
     transport = df[df["Передел"].astype(str).str.strip().isin(TRANSPORT_PEREDELY)].copy()
@@ -217,7 +228,8 @@ def to_metrics(aggr: dict) -> dict:
                          "util_pct": round(float(r["Использование_%"]), 1) if pd.notna(r["Использование_%"]) else None}
                         for _, r in tm.iterrows()],
         },
-        "idle": [{"unit": r["Подразделение"], "hours": int(r["Часов простоя"])}
+        "idle": [{"unit": r["Подразделение"], "hours": int(r["Часов простоя"]),
+                  "baseline": float(r["База_медиана"])}
                  for _, r in idle.iterrows()],
         "abc": {k: int(abc_counts.get(k, 0)) for k in ("A", "B", "C")},
         "mach_by_day": [{"date": _d(r["Дата"]), "material": r["Материал"],

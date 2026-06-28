@@ -14,7 +14,7 @@ METRICS = {
                 {"date": "2026-06-28", "volume": 30000.0, "trips": 1500.0}],
     "truck_util": {"overall_pct": 90.0,
                    "by_mark": [{"mark": "БелАЗ 7547", "util_pct": 90.0}]},
-    "idle": [{"unit": "Обман", "hours": 3}],
+    "idle": [{"unit": "Дражный", "hours": 120, "baseline": 70.0}],
     "abc": {"A": 4, "B": 3, "C": 3},
 }
 

@@ -10,7 +10,8 @@ STATE = BASE / "state"
 OUT = BASE / "output"
 
 MIN_BODY_UTIL = float(os.environ.get("HR_MIN_BODY_UTIL", "95"))
-MAX_IDLE_H = float(os.environ.get("HR_MAX_IDLE_H", "1.0"))
+IDLE_SPIKE_PCT = float(os.environ.get("HR_IDLE_SPIKE_PCT", "50"))   # выше базы на N% → алерт
+IDLE_MIN_HOURS = float(os.environ.get("HR_IDLE_MIN_HOURS", "20"))   # ниже — не шумим
 MAX_VOLUME_DROP = float(os.environ.get("HR_MAX_VOLUME_DROP", "30"))
 
 
@@ -45,7 +46,8 @@ def build_brief(m: dict) -> str:
 
 
 def detect_anomalies(m: dict, thresholds: dict | None = None) -> list[dict]:
-    th = {"util": MIN_BODY_UTIL, "idle": MAX_IDLE_H, "drop": MAX_VOLUME_DROP}
+    th = {"util": MIN_BODY_UTIL, "idle_spike": IDLE_SPIKE_PCT,
+          "idle_min": IDLE_MIN_HOURS, "drop": MAX_VOLUME_DROP}
     if thresholds:
         th.update(thresholds)
     out: list[dict] = []
@@ -54,10 +56,13 @@ def detect_anomalies(m: dict, thresholds: dict | None = None) -> list[dict]:
         out.append({"type": "body_util",
                     "text": f"Загрузка кузова {util}% ниже нормы {th['util']:.0f}%."})
     for i in m.get("idle", []):
-        if i["hours"] > th["idle"]:
+        base = i.get("baseline", 0) or 0
+        hrs = i["hours"]
+        if base > 0 and hrs >= th["idle_min"] and hrs > base * (1 + th["idle_spike"] / 100):
+            pct = (hrs / base - 1) * 100
             out.append({"type": "idle",
-                        "text": f"Простои в «{i['unit']}»: {i['hours']} ч "
-                                f"(порог {th['idle']:.0f} ч/смену)."})
+                        "text": f"Простои в «{i['unit']}»: {hrs} ч — на {pct:.0f}% выше нормы "
+                                f"(база ~{base:.0f} ч/день)."})
     # сравниваем ОТЧЁТНУЮ дату с днём перед ней (а не с частичным «сегодня»,
     # который мог попасть в by_date с утренним fetch)
     bd = m.get("by_date", [])
