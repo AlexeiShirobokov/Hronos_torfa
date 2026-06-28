@@ -22,6 +22,17 @@ def _fmt_int(x) -> str:
         return str(x)
 
 
+def _day_over_day(m: dict):
+    """(prev, cur) из by_date: отчётная дата и день перед ней (не частичный «сегодня»).
+    None, если отчётной даты нет в ряду или нет предыдущего дня."""
+    bd = m.get("by_date", [])
+    rd = m.get("report_date")
+    idx = next((i for i, d in enumerate(bd) if d.get("date") == rd), None)
+    if idx is not None and idx >= 1:
+        return bd[idx - 1], bd[idx]
+    return None
+
+
 def build_brief(m: dict) -> str:
     t = m["totals"]
     lines = [
@@ -33,10 +44,11 @@ def build_brief(m: dict) -> str:
     ]
     lines += [f"  - {u['unit']}: {_fmt_int(u['volume'])} м³ ({u['share_pct']}%), "
               f"м³/рейс {u['m3_per_trip']}" for u in m["by_unit"]]
-    bd = m["by_date"]
-    if len(bd) >= 2:
-        lines.append(f"Динамика: {bd[-2]['date']} {_fmt_int(bd[-2]['volume'])} м³ → "
-                     f"{bd[-1]['date']} {_fmt_int(bd[-1]['volume'])} м³.")
+    dod = _day_over_day(m)
+    if dod:
+        prev, cur = dod
+        lines.append(f"Динамика: {prev['date']} {_fmt_int(prev['volume'])} м³ → "
+                     f"{cur['date']} {_fmt_int(cur['volume'])} м³.")
     lines.append(f"Загрузка кузова (общая): {m['truck_util'].get('overall_pct')}%.")
     if m["idle"]:
         lines.append("Простои (часов): " +
@@ -65,11 +77,9 @@ def detect_anomalies(m: dict, thresholds: dict | None = None) -> list[dict]:
                                 f"(база ~{base:.0f} ч/день)."})
     # сравниваем ОТЧЁТНУЮ дату с днём перед ней (а не с частичным «сегодня»,
     # который мог попасть в by_date с утренним fetch)
-    bd = m.get("by_date", [])
-    rd = m.get("report_date")
-    idx = next((i for i, d in enumerate(bd) if d.get("date") == rd), None)
-    if idx is not None and idx >= 1 and bd[idx - 1]["volume"] > 0:
-        prev, cur = bd[idx - 1], bd[idx]
+    dod = _day_over_day(m)
+    if dod and dod[0]["volume"] > 0:
+        prev, cur = dod
         drop = (prev["volume"] - cur["volume"]) / prev["volume"] * 100
         if drop > th["drop"]:
             out.append({"type": "volume_drop",
@@ -93,11 +103,12 @@ def rule_based_note(m: dict) -> str:
     if leader:
         parts.append(f"Наибольший вклад — «{leader['unit']}»: {_fmt_int(leader['volume'])} м³ "
                      f"({leader['share_pct']}% объёма).")
-    bd = m["by_date"]
-    if len(bd) >= 2:
-        d = "снизился" if bd[-1]["volume"] < bd[-2]["volume"] else "вырос"
+    dod = _day_over_day(m)
+    if dod:
+        prev, cur = dod
+        d = "снизился" if cur["volume"] < prev["volume"] else "вырос"
         parts.append(f"К предыдущему дню объём {d}: "
-                     f"{_fmt_int(bd[-2]['volume'])} → {_fmt_int(bd[-1]['volume'])} м³.")
+                     f"{_fmt_int(prev['volume'])} → {_fmt_int(cur['volume'])} м³.")
     if al:
         parts.append("Внимание: " + " ".join(a["text"] for a in al))
     else:
