@@ -68,6 +68,10 @@ def _alerts_block(alerts: list[dict]) -> str:
 def build_html(m: dict, note: str, alerts: list[dict]) -> str:
     note_html = "".join(f"<p>{escape(p)}</p>" for p in note.split("\n\n") if p.strip())
     return (
+        '<!DOCTYPE html><html lang="ru"><head>'
+        '<meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '</head><body>'
         '<div style="font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1f2328;max-width:720px;">'
         '<h2 style="margin:0 0 4px;">Хронометраж транспортировки торфов</h2>'
         f'<div style="color:#57606a;">Отчётная дата: {escape(m["report_date"])} · '
@@ -80,7 +84,7 @@ def build_html(m: dict, note: str, alerts: list[dict]) -> str:
         '<p style="color:#8c959f;font-size:12px;margin-top:16px;">'
         'Детализация — во вложении (Excel: реестр + листы аналитики). '
         'Автоматическая рассылка хронометража.</p>'
-        '</div>'
+        '</div></body></html>'
     )
 
 
