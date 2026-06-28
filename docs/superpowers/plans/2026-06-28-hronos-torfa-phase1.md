@@ -138,7 +138,12 @@ git commit -m "chore: рассылка только на alexeimvc@gmail.com (о
 
 ---
 
-## Task 3: Модуль llm.py — SSH-мост к Claude
+## Task 3: Модуль llm.py — SSH-мост к Claude — ⏸ ОТЛОЖЕНО
+
+> **По решению пользователя мост в Фазе 1 не делаем.** Пояснительная записка
+> собирается правиловым способом (`explain.rule_based_note`). `explain.py` не
+> импортирует `llm`. Эту задачу выполнить в отдельной фазе, когда понадобится
+> «живой» текст от модели. Ниже — справочная реализация на будущее, **пропустить**.
 
 **Files:**
 - Create: `llm.py`
@@ -792,7 +797,6 @@ Expected: FAIL — `No module named 'explain'`.
 from __future__ import annotations
 import json, os, sys
 from pathlib import Path
-import llm
 
 BASE = Path(__file__).resolve().parent
 STATE = BASE / "state"
@@ -885,21 +889,9 @@ def rule_based_note(m: dict) -> str:
 
 
 def generate_note(m: dict) -> str:
-    if not llm.available():
-        return rule_based_note(m)
-    prompt = (
-        "Ты — аналитик горнодобывающего предприятия. По данным ниже напиши "
-        "пояснительную записку к ежедневному отчёту по транспортировке торфов: "
-        "деловой стиль, 3–5 абзацев, что произошло за день, ключевые цифры и "
-        "динамика к прошлому дню, узкие места (низкая загрузка кузова, простои), "
-        "краткие рекомендации. НИЧЕГО не выдумывай сверх приведённых чисел. "
-        "Без markdown-таблиц, только текст и абзацы.\n\nДАННЫЕ:\n" + build_brief(m)
-    )
-    try:
-        text = llm.ask(prompt).strip()
-        return text or rule_based_note(m)
-    except Exception:
-        return rule_based_note(m)
+    # Фаза 1: записка собирается по правилам (без модели/моста).
+    # Точка расширения: здесь можно подключить llm-мост (Task 3) в следующей фазе.
+    return rule_based_note(m)
 
 
 def main() -> int:
@@ -928,7 +920,7 @@ if __name__ == "__main__":
 Run: `$PY -m unittest tests.test_explain -v`
 Expected: PASS (3 теста).
 
-- [ ] **Step 5: Smoke — записка на реальных метриках (через мост, с фолбэком)**
+- [ ] **Step 5: Smoke — записка на реальных метриках (правиловая)**
 
 Run:
 ```bash
