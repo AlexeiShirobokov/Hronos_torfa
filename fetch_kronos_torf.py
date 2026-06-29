@@ -21,10 +21,11 @@ import email
 import email.header
 import email.utils
 import imaplib
+import json
 import os
 import re
 import sys
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 imaplib._MAXLINE = 10_000_000
@@ -33,6 +34,7 @@ BASE = Path(__file__).resolve().parent
 ENV_PATH = BASE / ".env"
 ATTACH_DIR = BASE / "input" / "mail_attachments"
 LOG_DIR = BASE / "logs"
+STATE = BASE / "state"
 EXCEL_EXT = {".xlsx", ".xls", ".xlsm"}
 
 
@@ -159,67 +161,75 @@ def main() -> int:
             log(f"[ERR] SELECT не удался для {real_folder!r}")
             return 5
 
-        typ, data = M.search(None, "ALL")
-        ids = data[0].split() if data and data[0] else []
-        log(f"[INFO] Всего писем в папке: {len(ids)}")
-        if not ids:
-            log("[WARN] Папка пуста — нечего скачивать.")
+        # Инкремент по UID: качаем ТОЛЬКО новые письма (которых ещё не видели) из окна
+        # последних N дней. Это и есть «перепроверять новые каждый раз» — без перекачки
+        # всего ящика и без роста папки дублями.
+        fetch_days = max(1, int(env.get("FETCH_DAYS", "7")))
+        cutoff = date.today() - timedelta(days=fetch_days)
+        _MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        since_str = f"{cutoff.day:02d}-{_MON[cutoff.month - 1]}-{cutoff.year}"
+        typ, data = M.uid("SEARCH", None, "SINCE", since_str)
+        win_uids = [u.decode() for u in (data[0].split() if data and data[0] else [])]
+        log(f"[INFO] UID-писем за окно (SINCE {since_str}, {fetch_days} дн): {len(win_uids)}")
+        if not win_uids:
+            log("[WARN] Нет писем за окно — нечего скачивать.")
             return 0
 
-        # 1-й проход: считываем INTERNALDATE, чтобы найти последнюю дату
-        latest_date: date | None = None
-        date_by_id: dict[bytes, date] = {}
-        BATCH_SIZE = 200
-        id_list = [b.decode() for b in ids]
-        for chunk_start in range(0, len(id_list), BATCH_SIZE):
-            chunk = id_list[chunk_start:chunk_start + BATCH_SIZE]
-            batch = ",".join(chunk)
-            typ, resp = M.fetch(batch, "(INTERNALDATE)")
-            if typ != "OK":
-                log(f"[ERR] FETCH INTERNALDATE не удался (chunk {chunk_start})")
-                return 6
-            for item in resp:
-                if not item:
-                    continue
-                s = item.decode("utf-8", errors="replace") if isinstance(item, bytes) else str(item)
-                m_id = re.match(r"(\d+)\s+\(INTERNALDATE\s+\"([^\"]+)\"\)", s)
-                if not m_id:
-                    continue
-                num = m_id.group(1).encode()
-                dt = email.utils.parsedate_to_datetime(m_id.group(2))
-                d = dt.date()
-                date_by_id[num] = d
-                if latest_date is None or d > latest_date:
-                    latest_date = d
+        # latest_date по INTERNALDATE окна (метка для consolidate), без тел писем
+        latest_date = cutoff
+        typ, resp = M.uid("FETCH", ",".join(win_uids), "(INTERNALDATE)")
+        for item in (resp or []):
+            if not isinstance(item, (bytes, bytearray)):
+                continue
+            mm = re.search(rb'INTERNALDATE "([^"]+)"', item)
+            if mm:
+                try:
+                    latest_date = max(latest_date,
+                                      email.utils.parsedate_to_datetime(mm.group(1).decode()).date())
+                except Exception:
+                    pass
 
-        if latest_date is None:
-            log("[ERR] Не удалось определить даты писем.")
-            return 7
-        log(f"[INFO] Последняя дата в папке: {latest_date.isoformat()}")
+        STATE.mkdir(parents=True, exist_ok=True)
+        seen_path = STATE / "fetched_uids.json"
+        seen: set[str] | None
+        if seen_path.exists():
+            try:
+                seen = set(json.loads(seen_path.read_text(encoding="utf-8")))
+            except Exception:
+                seen = set()
+        else:
+            seen = None  # первый запуск после внедрения
 
-        target_ids = [n for n, d in date_by_id.items() if d == latest_date]
-        log(f"[INFO] Писем за последнюю дату: {len(target_ids)}")
+        if seen is None:
+            # миграция: вложения уже скачаны ранее — помечаем окно виденным и НЕ
+            # перекачиваем; дальше будут качаться только новые письма
+            seen = set(win_uids)
+            seen_path.write_text(json.dumps(sorted(seen)), encoding="utf-8")
+            log("[INFO] Первичная инициализация UID — докачка пропущена (вложения уже есть).")
+            new_uids: list[str] = []
+        else:
+            new_uids = [u for u in win_uids if u not in seen]
+        log(f"[INFO] Новых писем к загрузке: {len(new_uids)}")
 
         saved = 0
-        for num in target_ids:
-            typ, msg_data = M.fetch(num, "(RFC822)")
+        for uid in new_uids:
+            typ, msg_data = M.uid("FETCH", uid, "(RFC822)")
             if typ != "OK" or not msg_data or not msg_data[0]:
-                log(f"[WARN] Не удалось получить письмо {num!r}")
+                log(f"[WARN] Не удалось получить письмо uid={uid}")
                 continue
             raw = msg_data[0][1]
             msg = email.message_from_bytes(raw)
             subj = decode_mime(msg.get("Subject", ""))
-            log(f"[MAIL] id={num.decode()} subj={subj!r}")
+            log(f"[MAIL] uid={uid} subj={subj!r}")
             for part in msg.walk():
                 if part.is_multipart():
                     continue
-                disp = (part.get("Content-Disposition") or "").lower()
                 fname = part.get_filename()
                 if not fname:
                     continue
                 fname = safe_filename(fname)
-                ext = Path(fname).suffix.lower()
-                if ext not in EXCEL_EXT:
+                if Path(fname).suffix.lower() not in EXCEL_EXT:
                     log(f"   [SKIP] {fname} (не Excel)")
                     continue
                 payload = part.get_payload(decode=True)
@@ -227,19 +237,37 @@ def main() -> int:
                     log(f"   [WARN] пустое вложение {fname}")
                     continue
                 dest = ATTACH_DIR / fname
-                # избегаем перезаписи
-                if dest.exists():
+                if dest.exists():   # избегаем перезаписи (потом чистится до последней)
                     stem, suf = dest.stem, dest.suffix
                     i = 1
-                    while True:
-                        cand = ATTACH_DIR / f"{stem}__{i}{suf}"
-                        if not cand.exists():
-                            dest = cand
-                            break
+                    while (ATTACH_DIR / f"{stem}__{i}{suf}").exists():
                         i += 1
+                    dest = ATTACH_DIR / f"{stem}__{i}{suf}"
                 dest.write_bytes(payload)
                 saved += 1
                 log(f"   [SAVE] {dest.name} ({len(payload)} bytes)")
+            seen.add(uid)
+        seen_path.write_text(json.dumps(sorted(seen)), encoding="utf-8")
+
+        # чистка: на каждый базовый файл оставляем только последнюю версию (max __N),
+        # чтобы папка не пухла дублями (consolidate всё равно берёт последнюю)
+        def _ver(name: str) -> int:
+            m = re.search(r"__(\d+)(?=\.[^.]+$)", name)
+            return int(m.group(1)) if m else 0
+        groups: dict[str, list[Path]] = {}
+        for p in ATTACH_DIR.iterdir():
+            if p.is_file():
+                base = re.sub(r"__\d+(?=\.[^.]+$)", "", p.name)
+                groups.setdefault(base, []).append(p)
+        removed = 0
+        for base, paths in groups.items():
+            for old in sorted(paths, key=lambda p: _ver(p.name))[:-1]:
+                try:
+                    old.unlink(); removed += 1
+                except OSError:
+                    pass
+        log(f"[INFO] Удалено старых версий вложений: {removed}; "
+            f"осталось файлов: {sum(1 for _ in ATTACH_DIR.iterdir())}")
 
         log(f"[DONE] Скачано вложений: {saved}")
         log(f"[DONE] Дата писем: {latest_date.isoformat()}")
@@ -248,8 +276,9 @@ def main() -> int:
         meta = BASE / "logs" / "last_fetch.meta"
         meta.write_text(
             f"date={latest_date.isoformat()}\n"
-            f"mails={len(target_ids)}\n"
+            f"mails={len(new_uids)}\n"
             f"files={saved}\n"
+            f"window_uids={len(win_uids)}\n"
             f"folder={real_folder}\n",
             encoding="utf-8",
         )
