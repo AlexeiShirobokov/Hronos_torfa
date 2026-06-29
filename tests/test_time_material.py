@@ -17,12 +17,13 @@ class TestTimeNorm(unittest.TestCase):
 
 
 class TestShiftMaterial(unittest.TestCase):
-    def test_shift_boundaries_08_20(self):
-        self.assertEqual(analytics._shift(8), "Дневная")
-        self.assertEqual(analytics._shift(19), "Дневная")
-        self.assertEqual(analytics._shift(20), "Ночная")
-        self.assertEqual(analytics._shift(7), "Ночная")
-        self.assertEqual(analytics._shift(0), "Ночная")
+    def test_shift_boundaries_07_20(self):
+        self.assertEqual(analytics._shift(7), "1 смена")
+        self.assertEqual(analytics._shift(8), "1 смена")
+        self.assertEqual(analytics._shift(19), "1 смена")
+        self.assertEqual(analytics._shift(20), "2 смена")
+        self.assertEqual(analytics._shift(6), "2 смена")
+        self.assertEqual(analytics._shift(0), "2 смена")
 
     def _csv(self, path):
         def row(date, peredel, t, mach):
@@ -46,11 +47,11 @@ class TestShiftMaterial(unittest.TestCase):
         # материалы разделены
         mats = {r["material"] for r in m["mach_by_day"]}
         self.assertEqual(mats, {"Торф", "Песок"})
-        # машины по сменам: торф день=5, ночь=3
+        # машины по сменам: торф 1 смена (09:00)=5, 2 смена (22:00)=3
         torf_shift = {(r["shift"]): r["machines"] for r in m["mach_by_shift"]
                       if r["material"] == "Торф"}
-        self.assertEqual(torf_shift["Дневная"], 5)
-        self.assertEqual(torf_shift["Ночная"], 3)
+        self.assertEqual(torf_shift["1 смена"], 5)
+        self.assertEqual(torf_shift["2 смена"], 3)
         # «Погрузка торфов» не попала в транспортировку
         self.assertEqual(sum(r["machines"] for r in m["mach_by_day"]), 10)
 

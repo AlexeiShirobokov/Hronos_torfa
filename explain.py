@@ -75,10 +75,10 @@ def detect_anomalies(m: dict, thresholds: dict | None = None) -> list[dict]:
             out.append({"type": "idle",
                         "text": f"Простои в «{i['unit']}»: {hrs} ч — на {pct:.0f}% выше нормы "
                                 f"(база ~{base:.0f} ч/день)."})
-    # сравниваем ОТЧЁТНУЮ дату с днём перед ней (а не с частичным «сегодня»,
-    # который мог попасть в by_date с утренним fetch)
+    # падение объёма — только для ПОЛНЫХ суток: на текущих (неполных) сутках сравнивать
+    # частичный итог с полным днём некорректно (даст ложный «обвал»)
     dod = _day_over_day(m)
-    if dod and dod[0]["volume"] > 0:
+    if not m.get("partial") and dod and dod[0]["volume"] > 0:
         prev, cur = dod
         drop = (prev["volume"] - cur["volume"]) / prev["volume"] * 100
         if drop > th["drop"]:
@@ -104,7 +104,14 @@ def rule_based_note(m: dict) -> str:
         parts.append(f"Наибольший вклад — «{leader['unit']}»: {_fmt_int(leader['volume'])} м³ "
                      f"({leader['share_pct']}% объёма).")
     dod = _day_over_day(m)
-    if dod:
+    if m.get("partial"):
+        lh = m.get("last_hour_kpi") or {}
+        cur = dod[1] if dod else None
+        accent = f" (на {lh['hour']})" if lh.get("hour") else ""
+        if cur:
+            parts.append(f"За текущие операционные сутки накоплено "
+                         f"{_fmt_int(cur['volume'])} м³ торфа нарастающим итогом{accent}.")
+    elif dod:
         prev, cur = dod
         d = "снизился" if cur["volume"] < prev["volume"] else "вырос"
         parts.append(f"К предыдущему дню объём {d}: "

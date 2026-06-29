@@ -1,6 +1,6 @@
 alexeimvc@gmail.com
-# временно отключены до завершения отладки (Фаза 1):
-# kazdobin@pskgold.ru
-# bardadym@pskgold.ru
-# paramonov@pskgold.ru
-# turchinskas@pskgold.ru
+# рассылка включена на всех получателей (с 2026-06-29):
+kazdobin@pskgold.ru
+bardadym@pskgold.ru
+paramonov@pskgold.ru
+turchinskas@pskgold.ru
