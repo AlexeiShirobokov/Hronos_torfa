@@ -11,7 +11,6 @@ BASE = Path(__file__).resolve().parent
 LOGS = BASE / "logs"
 STATE = BASE / "state"
 PY = sys.executable
-ALERT_TO = "alexeimvc@gmail.com"
 
 
 def load_env() -> dict:
@@ -48,10 +47,26 @@ def run(script: str) -> tuple[int, str]:
     return p.returncode, p.stdout
 
 
+def _alert_recipients(env: dict) -> list[str]:
+    """Получатели алертов = список рассылки (recipients.txt); фолбэк — отправитель."""
+    try:
+        import send_email
+        rcpts = send_email.load_recipients()
+    except Exception:
+        rcpts = []
+    if not rcpts:
+        login = env.get("YANDEX_LOGIN")
+        rcpts = [login] if login else []
+    return rcpts
+
+
 def _send_alert_email(env: dict, subject: str, body: str) -> None:
+    rcpts = _alert_recipients(env)
+    if not rcpts:
+        raise RuntimeError("нет получателей для алерта (recipients.txt пуст)")
     msg = EmailMessage()
-    msg["From"] = env.get("YANDEX_LOGIN", ALERT_TO)
-    msg["To"] = ALERT_TO
+    msg["From"] = env.get("YANDEX_LOGIN", "")
+    msg["To"] = ", ".join(rcpts)
     msg["Subject"] = f"[hronos_torfa] {subject}"
     msg.set_content(body)
     host = env.get("SMTP_HOST", "smtp.yandex.ru")
