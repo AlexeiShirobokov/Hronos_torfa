@@ -16,6 +16,21 @@ METRICS = {
                    "by_mark": [{"mark": "БелАЗ 7547", "util_pct": 90.0}]},
     "idle": [{"unit": "Дражный", "hours": 120, "baseline": 70.0}],
     "abc": {"A": 4, "B": 3, "C": 3},
+    "by_unit_day": [
+        {"unit": "Эрел", "vol_torf": 3330, "vol_pesok": 1806, "mach_torf": 221, "mach_pesok": 103, "idle_h": 0},
+        {"unit": "Обман", "vol_torf": 2100, "vol_pesok": 900, "mach_torf": 175, "mach_pesok": 75, "idle_h": 0},
+    ],
+    "unit_dev": [
+        {"unit": "Эрел", "vol": 5136, "vol_base": 4308, "idle": 0, "idle_base": 0},
+        {"unit": "Дражный", "vol": 9372, "vol_base": 11732, "idle": 120, "idle_base": 69},
+    ],
+    "hourly_unit": [
+        {"unit": "Эрел", "hour": "08:00", "machines": 10, "reason": ""},
+        {"unit": "Дражный", "hour": "20:00", "machines": 0, "reason": "ЕТО. Пересменка"},
+    ],
+    "idle_reasons": [
+        {"unit": "Дражный", "reason": "отсутствие напряжения ВЛ-35кВ", "kind": "внеплановый", "hours": 45},
+    ],
 }
 
 

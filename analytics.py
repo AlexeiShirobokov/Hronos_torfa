@@ -5,7 +5,7 @@ explain.py/email_html.py (metrics).
 from __future__ import annotations
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date
 import numpy as np
 import pandas as pd
 
@@ -34,6 +34,14 @@ def _shift(hour) -> str | None:
     return "Дневная" if DAY_SHIFT_START <= h < NIGHT_SHIFT_START else "Ночная"
 
 
+def _idle_kind(note) -> str:
+    """Плановый простой (обед, пересменка, ЕТО) vs внеплановый (ремонт/поломка/прочее)."""
+    s = str(note).strip().lower()
+    if "обед" in s or "пересмен" in s or s.startswith("ето"):
+        return "плановый"
+    return "внеплановый"
+
+
 def _to_hour(x):
     if pd.isna(x) or x in (None, "", " "):
         return None
@@ -58,6 +66,20 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df["Подразделение"] = df["Подразделение"].astype(str).str.strip()
     df["Час"] = df["Время"].apply(_to_hour)
+    if "Примечание" not in df.columns:
+        df["Примечание"] = ""
+
+    # отчёт «за сутки» = последний ПОЛНЫЙ день: если отчётная дата = сегодня
+    # (неполные сутки), отступаем на последний завершённый день в данных
+    today = date.today()
+    rd_ts = pd.to_datetime(report_date, errors="coerce")
+    rd_date = rd_ts.date() if pd.notna(rd_ts) else today
+    if rd_date >= today:
+        earlier = [d for d in df["Дата. Факт"].dt.date.dropna().unique() if d < today]
+        if earlier:
+            rd_date = max(earlier)
+    report_date = rd_date.isoformat()
+    rd_ts = pd.Timestamp(rd_date)
 
     trans = df[df["Передел"].astype(str).str.strip() == "Транспортировка торфов"].copy()
     trans["Водитель"] = (trans["Ф.И.О. водителя самосвала"].astype(str).str.strip()
@@ -131,9 +153,7 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
                .reindex(range(24), fill_value=0).reset_index())
 
     # простои: за отчётную дату + базовая линия (медиана до 7 дней до неё),
-    # чтобы алертить относительный скачок, а не абсолют
-    rd_ts = pd.to_datetime(report_date, errors="coerce")
-    rd_date = rd_ts.date() if pd.notna(rd_ts) else None
+    # чтобы алертить относительный скачок, а не абсолют (rd_date — последний полный день)
     idle_src = df[df["Передел"].astype(str).str.strip() == "простой"].copy()
     idle_src["Дата"] = idle_src["Дата. Факт"].dt.date
     idle_daily = (idle_src.groupby(["Подразделение", "Дата"]).size()
@@ -174,6 +194,75 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
             piv.index = [f"{h:02d}:00" for h in piv.index]
             mach_hour_pivot[mat] = piv.reset_index().rename(columns={"index": "Час"})
 
+    # ── Операционный срез за отчётную дату по подразделениям ──
+    transport["Дата"] = transport["Дата. Факт"].dt.date
+    day_tr = transport[transport["Дата"] == rd_date]
+
+    def _mat_piv(frame, value):
+        p = frame.pivot_table(index="Подразделение", columns="Материал",
+                              values=value, aggfunc="sum", fill_value=0)
+        for mat in ("Торф", "Песок"):
+            if mat not in p.columns:
+                p[mat] = 0
+        return p[["Торф", "Песок"]]
+
+    vol_p = _mat_piv(day_tr, "Обьем работ, м3")
+    mach_p = _mat_piv(day_tr, "Количство машин, шт")
+    by_unit_day = pd.DataFrame({
+        "Подразделение": list(vol_p.index),
+        "Объём_торф_м3": vol_p["Торф"].round().astype(int).values,
+        "Объём_песок_м3": vol_p["Песок"].round().astype(int).values,
+        "Машин_торф": mach_p["Торф"].round().astype(int).values,
+        "Машин_песок": mach_p["Песок"].round().astype(int).values,
+    })
+    idle_today = idle_daily[idle_daily["Дата"] == rd_date].set_index("Подразделение")["Часов простоя"]
+    by_unit_day["Простои_ч"] = by_unit_day["Подразделение"].map(idle_today).fillna(0).astype(int)
+    by_unit_day = by_unit_day.sort_values("Объём_торф_м3", ascending=False).reset_index(drop=True)
+
+    # отклонения по подразделениям: объём (торф+песок) и простои vs медиана 7 дней
+    unit_day_vol = transport.groupby(["Подразделение", "Дата"])["Обьем работ, м3"].sum().reset_index()
+    dev_rows = []
+    for unit in sorted(transport["Подразделение"].unique()):
+        g = unit_day_vol[unit_day_vol["Подразделение"] == unit]
+        today_v = float(g.loc[g["Дата"] == rd_date, "Обьем работ, м3"].sum())
+        prior_v = g.loc[g["Дата"] < rd_date].sort_values("Дата")["Обьем работ, м3"].tail(7)
+        base_v = float(prior_v.median()) if len(prior_v) else 0.0
+        gi = idle_daily[idle_daily["Подразделение"] == unit]
+        today_i = int(gi.loc[gi["Дата"] == rd_date, "Часов простоя"].sum())
+        prior_i = gi.loc[gi["Дата"] < rd_date].sort_values("Дата")["Часов простоя"].tail(7)
+        base_i = float(prior_i.median()) if len(prior_i) else 0.0
+        dev_rows.append({"Подразделение": unit, "Объём": round(today_v), "Объём_база": round(base_v),
+                         "Простои": today_i, "Простои_база": round(base_i)})
+    unit_dev = pd.DataFrame(dev_rows)
+
+    # почасовка по подразделениям: машины (транспортировка) + причина простоя из Примечания
+    day_all = df[df["Дата. Факт"].dt.date == rd_date].copy()
+    day_all["_per"] = day_all["Передел"].astype(str).str.strip()
+    day_tr_all = day_all[day_all["_per"].isin(TRANSPORT_PEREDELY)]
+    day_idle = day_all[day_all["_per"] == "простой"].dropna(subset=["Час"])
+    mach_h = day_tr_all.groupby(["Подразделение", "Час"])["Количство машин, шт"].sum()
+    reason_h = (day_idle.groupby(["Подразделение", "Час"])["Примечание"]
+                .agg(lambda s: "; ".join(dict.fromkeys(
+                    x.strip() for x in s.astype(str) if x.strip() and x.strip() != "nan"))))
+    hourly_rows = []
+    for unit in sorted(day_tr_all["Подразделение"].unique()):
+        for h in range(24):
+            hourly_rows.append({
+                "Подразделение": unit, "Час": f"{h:02d}:00",
+                "Машины": int(round(float(mach_h.get((unit, h), 0)))),
+                "Причина": reason_h.get((unit, h), ""),
+            })
+    hourly_unit = pd.DataFrame(hourly_rows,
+                              columns=["Подразделение", "Час", "Машины", "Причина"])
+
+    # аналитика причин простоя за сутки (плановые/внеплановые)
+    di = day_all[day_all["_per"] == "простой"].copy()
+    di["Причина"] = di["Примечание"].astype(str).str.strip().replace({"nan": "—", "": "—"})
+    di["Тип"] = di["Примечание"].apply(_idle_kind)
+    idle_reasons = (di.groupby(["Подразделение", "Причина", "Тип"]).size()
+                    .reset_index(name="Часов").sort_values("Часов", ascending=False)
+                    .reset_index(drop=True))
+
     return {
         "report_date": report_date,
         "date_min": df["Дата. Факт"].min(),
@@ -185,6 +274,8 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
         "n_rows": int(len(df)), "n_trans": int(len(trans)),
         "mach_by_day": mach_by_day, "mach_by_hour": mach_by_hour,
         "mach_by_shift": mach_by_shift, "mach_hour_pivot": mach_hour_pivot,
+        "by_unit_day": by_unit_day, "unit_dev": unit_dev,
+        "hourly_unit": hourly_unit, "idle_reasons": idle_reasons,
     }
 
 
@@ -242,6 +333,20 @@ def to_metrics(aggr: dict) -> dict:
                            "material": r["Материал"],
                            "machines": int(round(float(r["Машины"])))}
                           for _, r in aggr["mach_by_shift"].iterrows()],
+        "by_unit_day": [{"unit": r["Подразделение"],
+                         "vol_torf": int(r["Объём_торф_м3"]), "vol_pesok": int(r["Объём_песок_м3"]),
+                         "mach_torf": int(r["Машин_торф"]), "mach_pesok": int(r["Машин_песок"]),
+                         "idle_h": int(r["Простои_ч"])}
+                        for _, r in aggr["by_unit_day"].iterrows()],
+        "unit_dev": [{"unit": r["Подразделение"], "vol": int(r["Объём"]), "vol_base": int(r["Объём_база"]),
+                      "idle": int(r["Простои"]), "idle_base": int(r["Простои_база"])}
+                     for _, r in aggr["unit_dev"].iterrows()],
+        "hourly_unit": [{"unit": r["Подразделение"], "hour": r["Час"],
+                         "machines": int(r["Машины"]), "reason": r["Причина"]}
+                        for _, r in aggr["hourly_unit"].iterrows()],
+        "idle_reasons": [{"unit": r["Подразделение"], "reason": r["Причина"],
+                          "kind": r["Тип"], "hours": int(r["Часов"])}
+                         for _, r in aggr["idle_reasons"].iterrows()],
     }
 
 

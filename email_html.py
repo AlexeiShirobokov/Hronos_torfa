@@ -1,8 +1,14 @@
-"""Рендер HTML- и текстового тела письма из metrics + записки + аномалий.
+"""Рендер HTML- и текстового тела письма из metrics + записки.
+Операционный отчёт за прошедшие сутки в разрезе подразделений:
+KPI по подразделениям → отклонения → записка → почасовка 24ч → причины простоя.
 Только инлайн-стили (почтовые клиенты режут <style>). Зависимости — stdlib.
 """
 from __future__ import annotations
 from html import escape
+
+TH = ("padding:6px 10px;background:#305496;color:#fff;border:1px solid #d0d7de;"
+      "text-align:left;white-space:nowrap;")
+TD = "padding:5px 10px;border:1px solid #d0d7de;"
 
 
 def _fmt_int(x) -> str:
@@ -12,134 +18,164 @@ def _fmt_int(x) -> str:
         return str(x)
 
 
-def _kpi_tiles(m: dict) -> str:
-    t = m["totals"]
-    tiles = [("Объём, м³", _fmt_int(t["volume"])), ("Рейсов", _fmt_int(t["trips"])),
-             ("м³/рейс", t.get("m3_per_trip")), ("Водителей", t["drivers"]),
-             ("Самосвалов", t["trucks"]), ("Подразделений", t["units"])]
-    cells = "".join(
-        f'<td style="padding:8px 14px;border:1px solid #d0d7de;">'
-        f'<div style="color:#57606a;font-size:12px;">{escape(str(k))}</div>'
-        f'<div style="font-size:18px;font-weight:bold;">{escape(str(v))}</div></td>'
-        for k, v in tiles)
-    return f'<table style="border-collapse:collapse;margin:8px 0;"><tr>{cells}</tr></table>'
+def _th(*cols) -> str:
+    return "<tr>" + "".join(f'<th style="{TH}">{c}</th>' for c in cols) + "</tr>"
 
 
-def _unit_table(m: dict) -> str:
-    head = ("<tr>" + "".join(
-        f'<th style="padding:6px 10px;background:#305496;color:#fff;'
-        f'border:1px solid #d0d7de;text-align:left;">{h}</th>'
-        for h in ("Подразделение", "Рейсы", "Объём, м³", "м³/рейс", "Доля, %")) + "</tr>")
-    rows = ""
-    for i, u in enumerate(m["by_unit"]):
-        bg = "#f6f8fa" if i % 2 else "#ffffff"
-        rows += ("<tr>" + "".join(
-            f'<td style="padding:6px 10px;border:1px solid #d0d7de;background:{bg};">{c}</td>'
-            for c in (escape(u["unit"]), _fmt_int(u["trips"]), _fmt_int(u["volume"]),
-                      u["m3_per_trip"], u["share_pct"])) + "</tr>")
-    return f'<table style="border-collapse:collapse;margin:8px 0;">{head}{rows}</table>'
+def _row(cells, bg="#ffffff") -> str:
+    return "<tr>" + "".join(f'<td style="{TD}background:{bg};">{c}</td>' for c in cells) + "</tr>"
 
 
-def _trend_table(m: dict, days: int = 7) -> str:
-    bd = m["by_date"][-days:]
-    head = ('<tr><th style="padding:6px 10px;background:#305496;color:#fff;'
-            'border:1px solid #d0d7de;">Дата</th>'
-            '<th style="padding:6px 10px;background:#305496;color:#fff;'
-            'border:1px solid #d0d7de;">Объём, м³</th>'
-            '<th style="padding:6px 10px;background:#305496;color:#fff;'
-            'border:1px solid #d0d7de;">Рейсы</th></tr>')
-    rows = "".join(
-        f'<tr><td style="padding:6px 10px;border:1px solid #d0d7de;">{escape(str(d["date"]))}</td>'
-        f'<td style="padding:6px 10px;border:1px solid #d0d7de;">{_fmt_int(d["volume"])}</td>'
-        f'<td style="padding:6px 10px;border:1px solid #d0d7de;">{_fmt_int(d["trips"])}</td></tr>'
-        for d in bd)
-    return f'<table style="border-collapse:collapse;margin:8px 0;">{head}{rows}</table>'
-
-
-def _shift_rows(m: dict) -> list[dict]:
-    """Машины по материалу×смене за отчётную дату."""
-    rd = m.get("report_date")
-    rows = [r for r in m.get("mach_by_shift", []) if r.get("date") == rd]
-    agg: dict = {}
-    for r in rows:
-        agg.setdefault(r["material"], {"Дневная": 0, "Ночная": 0})
-        agg[r["material"]][r["shift"]] = r["machines"]
-    return [{"material": mat, "day": v["Дневная"], "night": v["Ночная"],
-             "total": v["Дневная"] + v["Ночная"]} for mat, v in agg.items()]
-
-
-def _shift_table(m: dict) -> str:
-    rows = _shift_rows(m)
+# ── 1. KPI по подразделениям за сутки ─────────────────────────────────────────
+def _kpi_by_unit(m: dict) -> str:
+    rows = m.get("by_unit_day", [])
     if not rows:
         return ""
-    head = ("<tr>" + "".join(
-        f'<th style="padding:6px 10px;background:#305496;color:#fff;'
-        f'border:1px solid #d0d7de;text-align:left;">{h}</th>'
-        for h in ("Материал", "Дневная", "Ночная", "Всего")) + "</tr>")
-    body = "".join(
-        "<tr>" + "".join(
-            f'<td style="padding:6px 10px;border:1px solid #d0d7de;">{c}</td>'
-            for c in (escape(r["material"]), _fmt_int(r["day"]),
-                      _fmt_int(r["night"]), _fmt_int(r["total"]))) + "</tr>"
-        for r in rows)
-    return (f'<h3>Машины по сменам · {escape(str(m["report_date"]))}</h3>'
+    head = _th("Подразделение", "Торф, м³", "Песок, м³", "Машин торф",
+               "Машин песок", "Простои, ч")
+    body = ""
+    tot = {"vt": 0, "vp": 0, "mt": 0, "mp": 0, "id": 0}
+    for i, u in enumerate(rows):
+        bg = "#f6f8fa" if i % 2 else "#ffffff"
+        body += _row([escape(u["unit"]), _fmt_int(u["vol_torf"]), _fmt_int(u["vol_pesok"]),
+                      _fmt_int(u["mach_torf"]), _fmt_int(u["mach_pesok"]),
+                      _fmt_int(u["idle_h"])], bg)
+        tot["vt"] += u["vol_torf"]; tot["vp"] += u["vol_pesok"]
+        tot["mt"] += u["mach_torf"]; tot["mp"] += u["mach_pesok"]; tot["id"] += u["idle_h"]
+    body += ("<tr style='font-weight:bold;'>" + "".join(
+        f'<td style="{TD}background:#eef2f8;">{c}</td>' for c in
+        ["Итого", _fmt_int(tot["vt"]), _fmt_int(tot["vp"]),
+         _fmt_int(tot["mt"]), _fmt_int(tot["mp"]), _fmt_int(tot["id"])]) + "</tr>")
+    return (f'<h3>1. Ключевые показатели за сутки — по подразделениям</h3>'
             f'<table style="border-collapse:collapse;margin:8px 0;">{head}{body}</table>')
 
 
-def _alerts_block(alerts: list[dict]) -> str:
-    if not alerts:
-        return '<p style="color:#1a7f37;">Существенных отклонений KPI не зафиксировано.</p>'
-    items = "".join(f"<li>{escape(a['text'])}</li>" for a in alerts)
-    return ('<div style="border-left:4px solid #d1242f;background:#fff8f8;padding:8px 14px;margin:8px 0;">'
-            '<b style="color:#d1242f;">Внимание — отклонения KPI:</b>'
-            f'<ul style="margin:6px 0;">{items}</ul></div>')
+# ── 2. Отклонения по подразделениям ───────────────────────────────────────────
+def _dev_flags(d: dict) -> list[str]:
+    flags = []
+    base_v, vol = d.get("vol_base", 0), d.get("vol", 0)
+    if base_v > 0:
+        dv = (vol - base_v) / base_v * 100
+        if dv <= -20:
+            flags.append(f"объём ниже нормы на {abs(dv):.0f}%")
+    base_i, idle = d.get("idle_base", 0), d.get("idle", 0)
+    if idle > 0 and (base_i == 0 or idle > base_i * 1.5):
+        flags.append(f"простои выше нормы на {(idle/base_i-1)*100:.0f}%" if base_i > 0
+                     else f"простои {idle} ч (раньше не было)")
+    return flags
+
+
+def _dev_block(m: dict) -> str:
+    rows = m.get("unit_dev", [])
+    if not rows:
+        return ""
+    head = _th("Подразделение", "Объём / норма, м³", "Простои / норма, ч", "Статус")
+    body = ""
+    for d in sorted(rows, key=lambda x: x["unit"]):
+        flags = _dev_flags(d)
+        bg = "#fff5f5" if flags else "#f3fbf4"
+        status = ("⚠ " + "; ".join(flags)) if flags else "✓ в норме"
+        body += _row([escape(d["unit"]),
+                      f'{_fmt_int(d["vol"])} / {_fmt_int(d["vol_base"])}',
+                      f'{_fmt_int(d["idle"])} / {_fmt_int(d["idle_base"])}',
+                      escape(status)], bg)
+    return (f'<h3>2. Внимание — отклонения по подразделениям (vs медиана 7 дней)</h3>'
+            f'<table style="border-collapse:collapse;margin:8px 0;">{head}{body}</table>')
+
+
+# ── 3. Пояснительная записка ──────────────────────────────────────────────────
+def _note_block(note: str) -> str:
+    note_html = "".join(f"<p>{escape(p)}</p>" for p in note.split("\n\n") if p.strip())
+    return f"<h3>Пояснительная записка</h3>{note_html}"
+
+
+# ── 4. Почасовая раскладка по подразделениям (24 ч) ───────────────────────────
+def _hourly_blocks(m: dict) -> str:
+    rows = m.get("hourly_unit", [])
+    if not rows:
+        return ""
+    units: dict[str, list] = {}
+    for r in rows:
+        units.setdefault(r["unit"], []).append(r)
+    out = ['<h3>3. Почасовая раскладка за сутки по подразделениям</h3>'
+           '<div style="color:#57606a;font-size:13px;">Где в часе нет машин — указана причина '
+           '(простой из «Примечания»).</div>']
+    for unit in sorted(units):
+        head = _th("Час", "Машин", "Причина простоя")
+        body = ""
+        for r in units[unit]:
+            m_cnt = r["machines"]
+            reason = escape(r["reason"] or "")
+            # подсветка: рабочий час без машин и без причины — серым, с причиной — жёлтым
+            if m_cnt == 0 and reason:
+                bg = "#fff8e6"
+            elif m_cnt == 0:
+                bg = "#fafafa"
+            else:
+                bg = "#ffffff"
+            body += _row([r["hour"], _fmt_int(m_cnt) if m_cnt else "—", reason or ""], bg)
+        out.append(f'<h4 style="margin:12px 0 2px;">{escape(unit)}</h4>'
+                   f'<table style="border-collapse:collapse;margin:2px 0;font-size:13px;">{head}{body}</table>')
+    return "".join(out)
+
+
+# ── 5. Аналитика причин простоя ───────────────────────────────────────────────
+def _idle_reasons_block(m: dict) -> str:
+    rows = m.get("idle_reasons", [])
+    if not rows:
+        return '<h3>4. Аналитика причин простоя</h3><p>Простои за сутки не зафиксированы.</p>'
+    planned = sum(r["hours"] for r in rows if r["kind"] == "плановый")
+    unplanned = sum(r["hours"] for r in rows if r["kind"] == "внеплановый")
+    head = _th("Подразделение", "Причина", "Тип", "Часов")
+    body = ""
+    for r in rows:
+        bg = "#fff5f5" if r["kind"] == "внеплановый" else "#f6f8fa"
+        body += _row([escape(r["unit"]), escape(r["reason"]), escape(r["kind"]),
+                      _fmt_int(r["hours"])], bg)
+    summary = (f'<p style="margin:6px 0;">Итого простоев: '
+               f'<b>{_fmt_int(planned + unplanned)} ч</b> · '
+               f'плановые (обед/пересменка/ЕТО) — {_fmt_int(planned)} ч · '
+               f'<span style="color:#d1242f;">внеплановые (поломки/нет напряжения) — '
+               f'{_fmt_int(unplanned)} ч</span>.</p>')
+    return (f'<h3>4. Аналитика причин простоя</h3>{summary}'
+            f'<table style="border-collapse:collapse;margin:8px 0;">{head}{body}</table>')
 
 
 def build_html(m: dict, note: str, alerts: list[dict]) -> str:
-    note_html = "".join(f"<p>{escape(p)}</p>" for p in note.split("\n\n") if p.strip())
+    rd = escape(str(m.get("report_date", "")))
+    per = m.get("period", ["", ""])
     return (
         '<!DOCTYPE html><html lang="ru"><head>'
         '<meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         '</head><body>'
-        '<div style="font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1f2328;max-width:720px;">'
+        '<div style="font-family:-apple-system,Segoe UI,Arial,sans-serif;color:#1f2328;max-width:860px;">'
         '<h2 style="margin:0 0 4px;">Хронометраж транспортировки торфов</h2>'
-        f'<div style="color:#57606a;">Отчётная дата: {escape(m["report_date"])} · '
-        f'период {escape(str(m["period"][0]))}…{escape(str(m["period"][1]))}</div>'
-        f'<h3>Ключевые показатели</h3>{_kpi_tiles(m)}'
-        f'{_alerts_block(alerts)}'
-        f'<h3>Пояснительная записка</h3>{note_html}'
-        f'<h3>По подразделениям</h3>{_unit_table(m)}'
-        f'{_shift_table(m)}'
-        f'<h3>Динамика (последние дни)</h3>{_trend_table(m)}'
-        '<p style="color:#8c959f;font-size:12px;margin-top:16px;">'
-        'Детализация — во вложении (Excel: реестр + листы аналитики). '
-        'Автоматическая рассылка хронометража.</p>'
+        f'<div style="color:#57606a;">Отчёт за прошедшие сутки: <b>{rd}</b> · '
+        f'данные {escape(str(per[0]))}…{escape(str(per[1]))}</div>'
+        + _kpi_by_unit(m)
+        + _dev_block(m)
+        + _note_block(note)
+        + _hourly_blocks(m)
+        + _idle_reasons_block(m)
+        + '<p style="color:#8c959f;font-size:12px;margin-top:16px;">'
+          'Детализация — во вложении (Excel: реестр + листы аналитики, почасовка, причины простоя). '
+          'Автоматическая рассылка хронометража.</p>'
         '</div></body></html>'
     )
 
 
 def build_text(m: dict, note: str, alerts: list[dict]) -> str:
-    t = m["totals"]
-    lines = [f"Хронометраж торфов — отчёт за {m['report_date']}",
-             f"Период: {m['period'][0]}…{m['period'][1]}", "",
-             f"Объём {_fmt_int(t['volume'])} м³ · рейсов {_fmt_int(t['trips'])} · "
-             f"м³/рейс {t.get('m3_per_trip')} · водителей {t['drivers']} · "
-             f"самосвалов {t['trucks']}", ""]
-    if alerts:
-        lines.append("ВНИМАНИЕ — отклонения KPI:")
-        lines += [f"  - {a['text']}" for a in alerts]
-    else:
-        lines.append("Существенных отклонений KPI не зафиксировано.")
-    lines += ["", "ПОЯСНИТЕЛЬНАЯ ЗАПИСКА:", note, "", "По подразделениям:"]
-    for u in m["by_unit"]:
-        lines.append(f"  {u['unit']}: {_fmt_int(u['volume'])} м³ ({u['share_pct']}%), "
-                     f"рейсов {_fmt_int(u['trips'])}")
-    srows = _shift_rows(m)
-    if srows:
-        lines += ["", f"Машины по сменам ({m['report_date']}):"]
-        for r in srows:
-            lines.append(f"  {r['material']}: день {_fmt_int(r['day'])}, "
-                         f"ночь {_fmt_int(r['night'])}, всего {_fmt_int(r['total'])}")
-    lines += ["", "Детализация — во вложении (Excel)."]
+    lines = [f"Хронометраж торфов — отчёт за сутки {m.get('report_date', '')}", ""]
+    lines.append("KPI по подразделениям (торф/песок, м³ | машин | простои ч):")
+    for u in m.get("by_unit_day", []):
+        lines.append(f"  {u['unit']}: торф {_fmt_int(u['vol_torf'])} / песок {_fmt_int(u['vol_pesok'])} м³ · "
+                     f"машин {_fmt_int(u['mach_torf'])}/{_fmt_int(u['mach_pesok'])} · простои {u['idle_h']} ч")
+    lines += ["", "Отклонения по подразделениям:"]
+    for d in m.get("unit_dev", []):
+        fl = _dev_flags(d)
+        lines.append(f"  {d['unit']}: {'⚠ ' + '; '.join(fl) if fl else 'в норме'}")
+    lines += ["", "ПОЯСНИТЕЛЬНАЯ ЗАПИСКА:", note, "",
+              "Причины простоя — см. HTML-письмо / Excel.",
+              "Почасовая раскладка — см. HTML-письмо / Excel."]
     return "\n".join(lines)
