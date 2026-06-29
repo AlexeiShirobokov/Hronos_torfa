@@ -383,9 +383,12 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
     for unit, g in roster.groupby("Подразделение"):
         insts = g[["_mark", "_inv"]].drop_duplicates()
         plan_by_unit[unit] = int(sum(_plan_rate(m) for m in insts["_mark"]))
-    pes_win = (pes_all[pes_all["_hour"].isin(elapsed)]
+    # в план/факт идёт только то, что ушло на НАЗВАННЫЙ прибор; вывоз на склад
+    # (без прибора) в Текущий/Средний/Ожидаемый не считаем
+    pes_dev = pes_all[pes_all["_mark"] != "Без прибора"]
+    pes_win = (pes_dev[pes_dev["_hour"].isin(elapsed)]
                .groupby(["Подразделение", "ОперДата"])["Обьем работ, м3"].sum())
-    pes_full = pes_all.groupby(["Подразделение", "ОперДата"])["Обьем работ, м3"].sum()
+    pes_full = pes_dev.groupby(["Подразделение", "ОперДата"])["Обьем работ, м3"].sum()
     n_elapsed = len(op_hours)        # истёкших операционных часов в сутках (для экстраполяции)
     pf_rows = []
     for unit in sorted(set(transport["Подразделение"].unique()) | set(plan_by_unit)):
