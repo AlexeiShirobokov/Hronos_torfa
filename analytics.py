@@ -44,8 +44,7 @@ def _plan_rate(mark: str) -> int:
         return 1200
     if "ПБШ" in m or "ПКБШ" in m:
         return 1200
-    if "ГГМ" in m:
-        return 900
+    # ГГМ-3 в плановую промывку песков не входит (по уточнению: Эрел = 2400 = только ГИТ-62)
     return 0
 
 
@@ -395,9 +394,12 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
         cur = float(wser.get(rd_date, 0.0))
         prior_f = fser[[d for d in fser.index if d < rd_date]].sort_index().tail(7)
         avg_f = float(prior_f.mean()) if len(prior_f) else 0.0
-        # ожидаемый за сутки: средний темп ТЕКУЩИХ суток (cur/истёкшие часы) × 24 опер-часа
-        expected = cur * 24.0 / n_elapsed if n_elapsed else cur
         plan = int(plan_by_unit.get(unit, 0))
+        # ожидаемый за сутки: средний темп ТЕКУЩИХ суток (cur/истёкшие часы) × 24 опер-часа,
+        # но не больше плановой производительности приборов (плант больше не переработает)
+        expected = cur * 24.0 / n_elapsed if n_elapsed else cur
+        if plan:
+            expected = min(expected, float(plan))
         pf_rows.append({
             "Подразделение": unit, "Текущий": round(cur), "Средний_7дн": round(avg_f),
             "План": plan, "Ожидаемый": round(expected),
