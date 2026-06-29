@@ -387,16 +387,16 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
     pes_win = (pes_all[pes_all["_hour"].isin(elapsed)]
                .groupby(["Подразделение", "ОперДата"])["Обьем работ, м3"].sum())
     pes_full = pes_all.groupby(["Подразделение", "ОперДата"])["Обьем работ, м3"].sum()
+    n_elapsed = len(op_hours)        # истёкших операционных часов в сутках (для экстраполяции)
     pf_rows = []
     for unit in sorted(set(transport["Подразделение"].unique()) | set(plan_by_unit)):
         wser = pes_win.xs(unit, level="Подразделение") if unit in pes_win.index.get_level_values(0) else pd.Series(dtype=float)
         fser = pes_full.xs(unit, level="Подразделение") if unit in pes_full.index.get_level_values(0) else pd.Series(dtype=float)
         cur = float(wser.get(rd_date, 0.0))
-        prior_w = wser[[d for d in wser.index if d < rd_date]].sort_index().tail(7)
         prior_f = fser[[d for d in fser.index if d < rd_date]].sort_index().tail(7)
-        avg_w = float(prior_w.mean()) if len(prior_w) else 0.0
         avg_f = float(prior_f.mean()) if len(prior_f) else 0.0
-        expected = cur * (avg_f / avg_w) if avg_w > 0 else cur
+        # ожидаемый за сутки: средний темп ТЕКУЩИХ суток (cur/истёкшие часы) × 24 опер-часа
+        expected = cur * 24.0 / n_elapsed if n_elapsed else cur
         plan = int(plan_by_unit.get(unit, 0))
         pf_rows.append({
             "Подразделение": unit, "Текущий": round(cur), "Средний_7дн": round(avg_f),
