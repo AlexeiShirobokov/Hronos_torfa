@@ -38,6 +38,10 @@ def write_sheets(aggr: dict, book_path: Path) -> None:
         for mat, piv in aggr.get("mach_hour_pivot", {}).items():
             sheet = f"Машины_час_{mat}"[:31]
             piv.to_excel(xw, sheet_name=sheet, index=False)
+        # песок в разрезе промывочных приборов (час × прибор) по подразделениям
+        for unit, piv in aggr.get("pesok_devices", {}).items():
+            sheet = f"Песок_{unit}"[:31]
+            piv.to_excel(xw, sheet_name=sheet, index=False)
 
 
 def _report_date() -> str:

@@ -98,32 +98,59 @@ def _hourly_blocks(m: dict) -> str:
     for r in rows:
         units.setdefault(r["unit"], []).append(r)
     out = ['<h3>3. Почасовая раскладка за сутки по подразделениям</h3>'
-           '<div style="color:#57606a;font-size:13px;">Где в часе нет машин — указана причина '
-           '(простой из «Примечания»).</div>']
+           '<div style="color:#57606a;font-size:13px;">Машины раздельно торф/песок; '
+           'где машин нет — указана причина (простой из «Примечания»).</div>']
     for unit in sorted(units):
-        head = _th("Час", "Машин", "Причина простоя")
+        head = _th("Час", "Торф", "Песок", "Причина простоя")
         body = ""
         for r in units[unit]:
-            m_cnt = r["machines"]
+            t, p = r.get("torf", 0), r.get("pesok", 0)
             reason = escape(r["reason"] or "")
-            # подсветка: рабочий час без машин и без причины — серым, с причиной — жёлтым
-            if m_cnt == 0 and reason:
+            if t == 0 and p == 0 and reason:
                 bg = "#fff8e6"
-            elif m_cnt == 0:
+            elif t == 0 and p == 0:
                 bg = "#fafafa"
             else:
                 bg = "#ffffff"
-            body += _row([r["hour"], _fmt_int(m_cnt) if m_cnt else "—", reason or ""], bg)
+            body += _row([r["hour"], _fmt_int(t) if t else "—",
+                          _fmt_int(p) if p else "—", reason or ""], bg)
         out.append(f'<h4 style="margin:12px 0 2px;">{escape(unit)}</h4>'
                    f'<table style="border-collapse:collapse;margin:2px 0;font-size:13px;">{head}{body}</table>')
     return "".join(out)
+
+
+# ── 4. Песок в разрезе промывочных приборов ───────────────────────────────────
+def _pesok_devices_block(m: dict) -> str:
+    pdv = m.get("pesok_devices", {})
+    if not pdv:
+        return ""
+    out = ['<h3>4. Песок — по промывочным приборам (машины/час)</h3>']
+    has_any = False
+    for unit in sorted(pdv):
+        devices = pdv[unit]["devices"]
+        rows = pdv[unit]["rows"]
+        if not devices:
+            continue
+        has_any = True
+        head = _th("Час", *[escape(d) for d in devices], "Итого")
+        body = ""
+        for r in rows:
+            vals = [int(round(float(r.get(d, 0) or 0))) for d in devices]
+            tot = sum(vals)
+            bg = "#ffffff" if tot else "#fafafa"
+            cells = [r["Час"]] + [_fmt_int(v) if v else "—" for v in vals] + \
+                    [f"<b>{_fmt_int(tot)}</b>" if tot else "—"]
+            body += _row(cells, bg)
+        out.append(f'<h4 style="margin:12px 0 2px;">{escape(unit)}</h4>'
+                   f'<table style="border-collapse:collapse;margin:2px 0;font-size:13px;">{head}{body}</table>')
+    return "".join(out) if has_any else ""
 
 
 # ── 5. Аналитика причин простоя ───────────────────────────────────────────────
 def _idle_reasons_block(m: dict) -> str:
     rows = m.get("idle_reasons", [])
     if not rows:
-        return '<h3>4. Аналитика причин простоя</h3><p>Простои за сутки не зафиксированы.</p>'
+        return '<h3>5. Аналитика причин простоя</h3><p>Простои за сутки не зафиксированы.</p>'
     planned = sum(r["hours"] for r in rows if r["kind"] == "плановый")
     unplanned = sum(r["hours"] for r in rows if r["kind"] == "внеплановый")
     head = _th("Подразделение", "Причина", "Тип", "Часов")
@@ -137,7 +164,7 @@ def _idle_reasons_block(m: dict) -> str:
                f'плановые (обед/пересменка/ЕТО) — {_fmt_int(planned)} ч · '
                f'<span style="color:#d1242f;">внеплановые (поломки/нет напряжения) — '
                f'{_fmt_int(unplanned)} ч</span>.</p>')
-    return (f'<h3>4. Аналитика причин простоя</h3>{summary}'
+    return (f'<h3>5. Аналитика причин простоя</h3>{summary}'
             f'<table style="border-collapse:collapse;margin:8px 0;">{head}{body}</table>')
 
 
@@ -157,6 +184,7 @@ def build_html(m: dict, note: str, alerts: list[dict]) -> str:
         + _dev_block(m)
         + _note_block(note)
         + _hourly_blocks(m)
+        + _pesok_devices_block(m)
         + _idle_reasons_block(m)
         + '<p style="color:#8c959f;font-size:12px;margin-top:16px;">'
           'Детализация — во вложении (Excel: реестр + листы аналитики, почасовка, причины простоя). '

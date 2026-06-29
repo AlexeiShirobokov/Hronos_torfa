@@ -25,12 +25,15 @@ METRICS = {
         {"unit": "Дражный", "vol": 9372, "vol_base": 11732, "idle": 120, "idle_base": 69},
     ],
     "hourly_unit": [
-        {"unit": "Эрел", "hour": "08:00", "machines": 10, "reason": ""},
-        {"unit": "Дражный", "hour": "20:00", "machines": 0, "reason": "ЕТО. Пересменка"},
+        {"unit": "Эрел", "hour": "08:00", "torf": 10, "pesok": 2, "reason": ""},
+        {"unit": "Дражный", "hour": "20:00", "torf": 0, "pesok": 0, "reason": "ЕТО. Пересменка"},
     ],
     "idle_reasons": [
         {"unit": "Дражный", "reason": "отсутствие напряжения ВЛ-35кВ", "kind": "внеплановый", "hours": 45},
     ],
+    "pesok_devices": {
+        "Эрел": {"devices": ["СБ-2.1 #713"], "rows": [{"Час": "08:00", "СБ-2.1 #713": 2}]},
+    },
 }
 
 

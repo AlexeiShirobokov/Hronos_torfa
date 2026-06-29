@@ -4,10 +4,23 @@ explain.py/email_html.py (metrics).
 """
 from __future__ import annotations
 import json
+import re
 from pathlib import Path
 from datetime import datetime, date
 import numpy as np
 import pandas as pd
+
+
+def _device(mark, inv) -> str:
+    """Метка промывочного прибора: «Марка #Инв» с нормализацией (СБ2.1→СБ-2.1, без .0)."""
+    m = re.sub(r"\s+", " ", str(mark).strip())
+    m = re.sub(r"СБ\s*-?\s*", "СБ-", m)        # СБ2.1 / СБ 2.1 → СБ-2.1
+    if m.lower() in ("", "nan"):
+        m = "—"
+    iv = str(inv).strip()
+    if iv.endswith(".0"):
+        iv = iv[:-2]
+    return f"{m} #{iv}" if iv.lower() not in ("", "nan") else m
 
 
 def _abc_class(p: float) -> str:
@@ -68,6 +81,9 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
     df["Час"] = df["Время"].apply(_to_hour)
     if "Примечание" not in df.columns:
         df["Примечание"] = ""
+    for _col in ("Марка промывочного прибора", "Инв. № промывочного прибора"):
+        if _col not in df.columns:
+            df[_col] = ""
 
     # отчёт «за сутки» = последний ПОЛНЫЙ день: если отчётная дата = сегодня
     # (неполные сутки), отступаем на последний завершённый день в данных
@@ -235,12 +251,16 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
                          "Простои": today_i, "Простои_база": round(base_i)})
     unit_dev = pd.DataFrame(dev_rows)
 
-    # почасовка по подразделениям: машины (транспортировка) + причина простоя из Примечания
+    # почасовка по подразделениям: машины раздельно торф/песок + причина простоя
     day_all = df[df["Дата. Факт"].dt.date == rd_date].copy()
     day_all["_per"] = day_all["Передел"].astype(str).str.strip()
-    day_tr_all = day_all[day_all["_per"].isin(TRANSPORT_PEREDELY)]
+    day_tr_all = day_all[day_all["_per"].isin(TRANSPORT_PEREDELY)].copy()
+    day_tr_all["Материал"] = day_tr_all["_per"].map(TRANSPORT_PEREDELY)
     day_idle = day_all[day_all["_per"] == "простой"].dropna(subset=["Час"])
-    mach_h = day_tr_all.groupby(["Подразделение", "Час"])["Количство машин, шт"].sum()
+    mt_h = (day_tr_all[day_tr_all["Материал"] == "Торф"]
+            .groupby(["Подразделение", "Час"])["Количство машин, шт"].sum())
+    mp_h = (day_tr_all[day_tr_all["Материал"] == "Песок"]
+            .groupby(["Подразделение", "Час"])["Количство машин, шт"].sum())
     reason_h = (day_idle.groupby(["Подразделение", "Час"])["Примечание"]
                 .agg(lambda s: "; ".join(dict.fromkeys(
                     x.strip() for x in s.astype(str) if x.strip() and x.strip() != "nan"))))
@@ -249,11 +269,27 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
         for h in range(24):
             hourly_rows.append({
                 "Подразделение": unit, "Час": f"{h:02d}:00",
-                "Машины": int(round(float(mach_h.get((unit, h), 0)))),
+                "Машин_торф": int(round(float(mt_h.get((unit, h), 0)))),
+                "Машин_песок": int(round(float(mp_h.get((unit, h), 0)))),
                 "Причина": reason_h.get((unit, h), ""),
             })
-    hourly_unit = pd.DataFrame(hourly_rows,
-                              columns=["Подразделение", "Час", "Машины", "Причина"])
+    hourly_unit = pd.DataFrame(
+        hourly_rows, columns=["Подразделение", "Час", "Машин_торф", "Машин_песок", "Причина"])
+
+    # песок в разрезе промывочных приборов: пивот час × прибор по подразделениям
+    pes = day_tr_all[day_tr_all["Материал"] == "Песок"].dropna(subset=["Час"]).copy()
+    pes["Прибор"] = [_device(mk, iv) for mk, iv in
+                     zip(pes["Марка промывочного прибора"], pes["Инв. № промывочного прибора"])]
+    pesok_devices = {}
+    for unit in sorted(pes["Подразделение"].unique()):
+        sub = pes[pes["Подразделение"] == unit]
+        piv = (sub.pivot_table(index="Час", columns="Прибор",
+                               values="Количство машин, шт", aggfunc="sum", fill_value=0)
+               .reindex(range(24), fill_value=0))
+        piv.index = [f"{h:02d}:00" for h in piv.index]
+        piv = piv.reset_index().rename(columns={"index": "Час"})
+        piv.columns.name = None
+        pesok_devices[unit] = piv
 
     # аналитика причин простоя за сутки (плановые/внеплановые)
     di = day_all[day_all["_per"] == "простой"].copy()
@@ -276,6 +312,7 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
         "mach_by_shift": mach_by_shift, "mach_hour_pivot": mach_hour_pivot,
         "by_unit_day": by_unit_day, "unit_dev": unit_dev,
         "hourly_unit": hourly_unit, "idle_reasons": idle_reasons,
+        "pesok_devices": pesok_devices,
     }
 
 
@@ -342,11 +379,15 @@ def to_metrics(aggr: dict) -> dict:
                       "idle": int(r["Простои"]), "idle_base": int(r["Простои_база"])}
                      for _, r in aggr["unit_dev"].iterrows()],
         "hourly_unit": [{"unit": r["Подразделение"], "hour": r["Час"],
-                         "machines": int(r["Машины"]), "reason": r["Причина"]}
+                         "torf": int(r["Машин_торф"]), "pesok": int(r["Машин_песок"]),
+                         "reason": r["Причина"]}
                         for _, r in aggr["hourly_unit"].iterrows()],
         "idle_reasons": [{"unit": r["Подразделение"], "reason": r["Причина"],
                           "kind": r["Тип"], "hours": int(r["Часов"])}
                          for _, r in aggr["idle_reasons"].iterrows()],
+        "pesok_devices": {unit: {"devices": [c for c in piv.columns if c != "Час"],
+                                 "rows": piv.to_dict("records")}
+                          for unit, piv in aggr["pesok_devices"].items()},
     }
 
 
