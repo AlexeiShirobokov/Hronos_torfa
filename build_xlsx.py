@@ -16,6 +16,7 @@ CSV = LOGS / "consolidated.csv"
 
 SHEETS = {
     "KPI_сутки": "by_unit_day",
+    "План_факт_пески": "plan_fact",
     "Отклонения": "unit_dev",
     "Причины_простоя": "idle_reasons",
     "Почасовка_сутки": "hourly_unit",

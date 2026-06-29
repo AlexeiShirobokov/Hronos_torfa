@@ -83,45 +83,40 @@ def _kpi_by_unit(m: dict) -> str:
             f'<table>{head}{body}</table>')
 
 
-# ── 2. Отклонения по подразделениям ───────────────────────────────────────────
-def _dev_flags(d: dict) -> list[str]:
-    flags = []
-    base_v, vol = d.get("vol_base", 0), d.get("vol", 0)
-    if base_v > 0:
-        dv = (vol - base_v) / base_v * 100
-        if dv <= -20:
-            flags.append(f"объём ниже нормы на {abs(dv):.0f}%")
-    base_i, idle = d.get("idle_base", 0), d.get("idle", 0)
-    if idle > 0 and (base_i == 0 or idle > base_i * 1.5):
-        flags.append(f"простои выше нормы на {(idle/base_i-1)*100:.0f}%" if base_i > 0
-                     else f"простои {idle} ч (раньше не было)")
-    return flags
-
-
+# ── 2. План/факт по пескам (промывочные приборы) ──────────────────────────────
 def _window_label(m: dict) -> str:
     oh = m.get("op_hours") or []
     return f"{oh[0]}–{oh[-1]}" if oh else "сутки"
 
 
-def _dev_block(m: dict) -> str:
-    rows = m.get("unit_dev", [])
+def _plan_fact_block(m: dict) -> str:
+    rows = m.get("plan_fact", [])
     if not rows:
         return ""
     win = _window_label(m)
-    head = _th("Подразделение", f"Объём за {win} / норма, м³", "Простои / норма, ч", "Статус")
+    head = _th("Подразделение", f"Текущий объём ({win}), м³", "Средний за 7 дн, м³",
+               "Плановый объём, м³", "Ожидаемый за сутки, м³",
+               "% плана (факт)", "% плана (прогноз)", "Статус")
     body = ""
     for d in sorted(rows, key=lambda x: x["unit"]):
-        flags = _dev_flags(d)
-        bg = "#fff5f5" if flags else "#f3fbf4"
-        status = ("⚠ " + "; ".join(flags)) if flags else "✓ в норме"
-        body += _row([escape(d["unit"]),
-                      f'{_fmt_int(d["vol"])} / {_fmt_int(d["vol_base"])}',
-                      f'{_fmt_int(d["idle"])} / {_fmt_int(d["idle_base"])}',
-                      escape(status)], bg)
-    return (f'<h3>2. Внимание — отклонения по подразделениям</h3>'
-            f'<div style="color:#57606a;font-size:13px;">Период сравнения — текущие '
-            f'операционные сутки <b>{escape(win)}</b> (нарастающим итогом). Норма — медиана '
-            f'за тот же интервал суток за предыдущие 7 дней (корректно для неполного дня).</div>'
+        plan, pf, pj = d["plan"], d.get("pct_fact"), d.get("pct_proj")
+        if not plan:
+            status, bg = "— нет плана", "#ffffff"
+        elif pj is not None and pj < 90:
+            status, bg = f"⚠ прогноз {pj:.0f}% плана", "#fff5f5"
+        else:
+            status = f"✓ прогноз {pj:.0f}% плана" if pj is not None else "✓"
+            bg = "#f3fbf4"
+        body += _row([escape(d["unit"]), _fmt_int(d["cur"]), _fmt_int(d["avg7"]),
+                      _fmt_int(plan) if plan else "—", _fmt_int(d["expected"]),
+                      f"{pf:.0f}%" if pf is not None else "—",
+                      f"{pj:.0f}%" if pj is not None else "—", escape(status)], bg)
+    return ('<h3>2. План/факт по пескам (промывочные приборы)</h3>'
+            '<div style="color:#57606a;font-size:13px;">План = суточная производительность '
+            'приборов (СБ-2.1/ГИТ-62 — 2400 м³, ПБШ-100/СБ-1.7 — 1200, ГГМ-3 — 900) × число '
+            f'приборов подразделения. Текущий — накоплено за <b>{escape(win)}</b> текущих суток; '
+            'ожидаемый — прогноз на полные сутки по набранному темпу; средний — за предыдущие '
+            '7 дней.</div>'
             f'<table>{head}{body}</table>')
 
 
@@ -340,7 +335,7 @@ def build_html(m: dict, note: str, alerts: list[dict]) -> str:
         '<h2 style="margin:0 0 4px;">Хронометраж транспортировки торфов и песков</h2>'
         + _header(m)
         + _kpi_by_unit(m)
-        + _dev_block(m)
+        + _plan_fact_block(m)
         + _note_block(note)
         + _hourly_blocks(m)
         + _dynamics_block(m)
@@ -365,10 +360,12 @@ def build_text(m: dict, note: str, alerts: list[dict]) -> str:
     for u in m.get("by_unit_day", []):
         lines.append(f"  {u['unit']}: торф {_fmt_int(u['vol_torf'])} / пески {_fmt_int(u['vol_pesok'])} м³ · "
                      f"машин {_fmt_int(u['mach_torf'])}/{_fmt_int(u['mach_pesok'])} · простои {u['idle_h']} ч")
-    lines += ["", "Отклонения по подразделениям:"]
-    for d in m.get("unit_dev", []):
-        fl = _dev_flags(d)
-        lines.append(f"  {d['unit']}: {'⚠ ' + '; '.join(fl) if fl else 'в норме'}")
+    lines += ["", "План/факт по пескам (текущий / план / ожидаемый, м³):"]
+    for d in m.get("plan_fact", []):
+        pj = d.get("pct_proj")
+        tail = f" · прогноз {pj:.0f}% плана" if pj is not None else ""
+        lines.append(f"  {d['unit']}: {_fmt_int(d['cur'])} / {_fmt_int(d['plan'])} / "
+                     f"{_fmt_int(d['expected'])}{tail}")
     lines += ["", "ПОЯСНИТЕЛЬНАЯ ЗАПИСКА:", note, "",
               "Почасовка, динамика, причины простоя — см. HTML-письмо / Excel."]
     return "\n".join(lines)

@@ -26,6 +26,29 @@ def _device(mark, inv) -> str:
     return f"{m} #{iv}" if iv.lower() not in ("", "nan") else m
 
 
+def _dev_mark(mark) -> str:
+    """Нормализованная марка промывочного прибора (без инв.№), «Без прибора» если пусто."""
+    m = re.sub(r"\s+", " ", str(mark).strip())
+    m = re.sub(r"СБ\s*-?\s*", "СБ-", m)
+    return "Без прибора" if m.lower() in ("", "nan") else m
+
+
+def _plan_rate(mark: str) -> int:
+    """Плановая суточная производительность прибора, м³ (0 — неизвестный/нет прибора)."""
+    m = str(mark).upper().replace(" ", "")
+    if "СБ-2.1" in m or "СБ2.1" in m:
+        return 2400
+    if "ГИТ" in m:
+        return 2400
+    if "СБ-1.7" in m or "СБ1.7" in m:
+        return 1200
+    if "ПБШ" in m or "ПКБШ" in m:
+        return 1200
+    if "ГГМ" in m:
+        return 900
+    return 0
+
+
 def _abc_class(p: float) -> str:
     if p <= 80.0:
         return "A"
@@ -350,6 +373,40 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
                          "Простои": today_i, "Простои_база": round(base_i)})
     unit_dev = pd.DataFrame(dev_rows)
 
+    # ── План/факт по пескам: план = суммарная производительность промприборов ──
+    pes_all = transport[transport["Материал"] == "Песок"].copy()
+    pes_all["_mark"] = pes_all["Марка промывочного прибора"].apply(_dev_mark)
+    pes_all["_inv"] = (pes_all["Инв. № промывочного прибора"].astype(str).str.strip()
+                       .str.replace(r"\.0$", "", regex=True))
+    roster_dates = set(sorted([d for d in pes_all["ОперДата"].dropna().unique()])[-7:]) | {rd_date}
+    roster = pes_all[pes_all["ОперДата"].isin(roster_dates)]
+    plan_by_unit = {}
+    for unit, g in roster.groupby("Подразделение"):
+        insts = g[["_mark", "_inv"]].drop_duplicates()
+        plan_by_unit[unit] = int(sum(_plan_rate(m) for m in insts["_mark"]))
+    pes_win = (pes_all[pes_all["_hour"].isin(elapsed)]
+               .groupby(["Подразделение", "ОперДата"])["Обьем работ, м3"].sum())
+    pes_full = pes_all.groupby(["Подразделение", "ОперДата"])["Обьем работ, м3"].sum()
+    pf_rows = []
+    for unit in sorted(set(transport["Подразделение"].unique()) | set(plan_by_unit)):
+        wser = pes_win.xs(unit, level="Подразделение") if unit in pes_win.index.get_level_values(0) else pd.Series(dtype=float)
+        fser = pes_full.xs(unit, level="Подразделение") if unit in pes_full.index.get_level_values(0) else pd.Series(dtype=float)
+        cur = float(wser.get(rd_date, 0.0))
+        prior_w = wser[[d for d in wser.index if d < rd_date]].sort_index().tail(7)
+        prior_f = fser[[d for d in fser.index if d < rd_date]].sort_index().tail(7)
+        avg_w = float(prior_w.mean()) if len(prior_w) else 0.0
+        avg_f = float(prior_f.mean()) if len(prior_f) else 0.0
+        expected = cur * (avg_f / avg_w) if avg_w > 0 else cur
+        plan = int(plan_by_unit.get(unit, 0))
+        pf_rows.append({
+            "Подразделение": unit, "Текущий": round(cur), "Средний_7дн": round(avg_f),
+            "План": plan, "Ожидаемый": round(expected),
+            "Факт_%": round(cur / plan * 100) if plan else None,
+            "Прогноз_%": round(expected / plan * 100) if plan else None,
+        })
+    plan_fact = pd.DataFrame(pf_rows, columns=["Подразделение", "Текущий", "Средний_7дн",
+                                               "План", "Ожидаемый", "Факт_%", "Прогноз_%"])
+
     # ── Почасовка за отчётные сутки (истёкшие часы, опер. порядок, со сменой) ──
     day_all = df[df["ОперДата"] == rd_date].copy()
     day_all["_per"] = day_all["Передел"].astype(str).str.strip()
@@ -423,7 +480,7 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
         "mach_by_day": mach_by_day, "mach_by_hour": mach_by_hour,
         "mach_by_shift": mach_by_shift, "mach_hour_pivot": mach_hour_pivot,
         "mach_hour_pivot_unit": mach_hour_pivot_unit,
-        "by_unit_day": by_unit_day, "unit_dev": unit_dev,
+        "by_unit_day": by_unit_day, "unit_dev": unit_dev, "plan_fact": plan_fact,
         "hourly_unit": hourly_unit, "idle_reasons": idle_reasons,
         "idle_dyn": idle_dyn, "pesok_devices": pesok_devices,
         "otkatka_unit": otkatka_unit, "otkatka_dyn": otkatka_dyn,
@@ -528,6 +585,11 @@ def to_metrics(aggr: dict) -> dict:
         "unit_dev": [{"unit": r["Подразделение"], "vol": int(r["Объём"]), "vol_base": int(r["Объём_база"]),
                       "idle": int(r["Простои"]), "idle_base": int(r["Простои_база"])}
                      for _, r in aggr["unit_dev"].iterrows()],
+        "plan_fact": [{"unit": r["Подразделение"], "cur": int(r["Текущий"]), "avg7": int(r["Средний_7дн"]),
+                       "plan": int(r["План"]), "expected": int(r["Ожидаемый"]),
+                       "pct_fact": None if pd.isna(r["Факт_%"]) else float(r["Факт_%"]),
+                       "pct_proj": None if pd.isna(r["Прогноз_%"]) else float(r["Прогноз_%"])}
+                      for _, r in aggr["plan_fact"].iterrows()],
         "hourly_unit": [{"unit": r["Подразделение"], "shift": r["Смена"], "hour": r["Час"],
                          "torf": int(r["Машин_торф"]), "pesok": int(r["Машин_песок"]),
                          "reason": r["Причина"]}

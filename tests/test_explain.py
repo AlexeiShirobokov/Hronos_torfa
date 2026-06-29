@@ -27,6 +27,12 @@ METRICS = {
         {"unit": "Эрел", "vol": 5136, "vol_base": 4308, "idle": 0, "idle_base": 0},
         {"unit": "Дражный", "vol": 9372, "vol_base": 11732, "idle": 120, "idle_base": 69},
     ],
+    "plan_fact": [
+        {"unit": "Эрел", "cur": 1806, "avg7": 3200, "plan": 3300, "expected": 3100,
+         "pct_fact": 55.0, "pct_proj": 94.0},
+        {"unit": "Обман", "cur": 300, "avg7": 1000, "plan": 1200, "expected": 800,
+         "pct_fact": 25.0, "pct_proj": 67.0},
+    ],
     "hourly_unit": [
         {"unit": "Эрел", "shift": "1 смена", "hour": "08:00", "torf": 10, "pesok": 2, "reason": ""},
         {"unit": "Дражный", "shift": "2 смена", "hour": "20:00", "torf": 0, "pesok": 0,
