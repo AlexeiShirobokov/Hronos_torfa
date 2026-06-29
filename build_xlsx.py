@@ -15,6 +15,10 @@ LOGS = BASE / "logs"
 CSV = LOGS / "consolidated.csv"
 
 SHEETS = {
+    "KPI_сутки": "by_unit_day",
+    "Отклонения": "unit_dev",
+    "Причины_простоя": "idle_reasons",
+    "Почасовка_сутки": "hourly_unit",
     "Свод_подразделения": "by_unit",
     "Свод_даты": "by_date",
     "ABC_водители": "drivers",
