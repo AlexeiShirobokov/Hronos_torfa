@@ -190,38 +190,55 @@ def main() -> int:
                 except Exception:
                     pass
 
-        STATE.mkdir(parents=True, exist_ok=True)
-        seen_path = STATE / "fetched_uids.json"
-        seen: set[str] | None
-        if seen_path.exists():
-            try:
-                seen = set(json.loads(seen_path.read_text(encoding="utf-8")))
-            except Exception:
-                seen = set()
-        else:
-            seen = None  # первый запуск после внедрения
+        # карта uid → ключ файла: хвост имени Excel-вложения из BODYSTRUCTURE
+        # (русские имена MIME-кодированы; хвост стабильно идентифицирует подразделение),
+        # без скачивания тел писем — дёшево
+        uid_key: dict[str, str] = {}
+        typ, resp = M.uid("FETCH", ",".join(win_uids), "(BODYSTRUCTURE)")
+        for item in (resp or []):
+            blob = item[0] if isinstance(item, tuple) else item
+            if not isinstance(blob, (bytes, bytearray)):
+                continue
+            s = blob.decode("utf-8", errors="replace")
+            mu = re.search(r"UID (\d+)", s)
+            if not mu:
+                continue
+            for w in re.findall(r"=\?[^?]+\?[BbQq]\?[^?]+\?=", s):
+                try:
+                    dn = str(email.header.make_header(email.header.decode_header(w)))
+                except Exception:
+                    continue
+                if dn.lower().endswith((".xlsx", ".xls", ".xlsm")):
+                    uid_key[mu.group(1)] = dn
+                    break
 
-        if seen is None:
-            # миграция: вложения уже скачаны ранее — помечаем окно виденным и НЕ
-            # перекачиваем; дальше будут качаться только новые письма
-            seen = set(win_uids)
-            seen_path.write_text(json.dumps(sorted(seen)), encoding="utf-8")
-            log("[INFO] Первичная инициализация UID — докачка пропущена (вложения уже есть).")
-            new_uids: list[str] = []
-        else:
-            new_uids = [u for u in win_uids if u not in seen]
-        log(f"[INFO] Новых писем к загрузке: {len(new_uids)}")
+        # новейший uid на каждый файл-источник (UID растёт со временем)
+        latest_uid: dict[str, str] = {}
+        for uid, key in uid_key.items():
+            if key not in latest_uid or int(uid) > int(latest_uid[key]):
+                latest_uid[key] = uid
+        log(f"[INFO] Файлов-источников в окне: {len(latest_uid)}")
+
+        # что уже скачано (ключ → последний UID): качаем только если появился новее
+        STATE.mkdir(parents=True, exist_ok=True)
+        bu_path = STATE / "base_uid.json"
+        base_uid: dict[str, str] = {}
+        if bu_path.exists():
+            try:
+                base_uid = json.loads(bu_path.read_text(encoding="utf-8"))
+            except Exception:
+                base_uid = {}
+        to_dl = [(k, u) for k, u in latest_uid.items() if base_uid.get(k) != u]
+        log(f"[INFO] Новее прежнего (к загрузке): {len(to_dl)}")
 
         saved = 0
-        for uid in new_uids:
+        for key, uid in to_dl:
             typ, msg_data = M.uid("FETCH", uid, "(RFC822)")
             if typ != "OK" or not msg_data or not msg_data[0]:
                 log(f"[WARN] Не удалось получить письмо uid={uid}")
                 continue
-            raw = msg_data[0][1]
-            msg = email.message_from_bytes(raw)
-            subj = decode_mime(msg.get("Subject", ""))
-            log(f"[MAIL] uid={uid} subj={subj!r}")
+            msg = email.message_from_bytes(msg_data[0][1])
+            log(f"[MAIL] uid={uid} subj={decode_mime(msg.get('Subject', ''))!r}")
             for part in msg.walk():
                 if part.is_multipart():
                     continue
@@ -230,44 +247,26 @@ def main() -> int:
                     continue
                 fname = safe_filename(fname)
                 if Path(fname).suffix.lower() not in EXCEL_EXT:
-                    log(f"   [SKIP] {fname} (не Excel)")
                     continue
                 payload = part.get_payload(decode=True)
                 if not payload:
-                    log(f"   [WARN] пустое вложение {fname}")
                     continue
-                dest = ATTACH_DIR / fname
-                if dest.exists():   # избегаем перезаписи (потом чистится до последней)
-                    stem, suf = dest.stem, dest.suffix
-                    i = 1
-                    while (ATTACH_DIR / f"{stem}__{i}{suf}").exists():
-                        i += 1
-                    dest = ATTACH_DIR / f"{stem}__{i}{suf}"
+                # пишем свежую версию как базовое имя, удалив прежние версии этого файла
+                # (включая старые суффиксы __N) — «последняя версия» = только что скачанная
+                base_name = re.sub(r"__\d+(?=\.[^.]+$)", "", fname)
+                for old in list(ATTACH_DIR.glob("*")):
+                    if old.is_file() and re.sub(r"__\d+(?=\.[^.]+$)", "", old.name) == base_name:
+                        try:
+                            old.unlink()
+                        except OSError:
+                            pass
+                dest = ATTACH_DIR / base_name
                 dest.write_bytes(payload)
                 saved += 1
                 log(f"   [SAVE] {dest.name} ({len(payload)} bytes)")
-            seen.add(uid)
-        seen_path.write_text(json.dumps(sorted(seen)), encoding="utf-8")
-
-        # чистка: на каждый базовый файл оставляем только последнюю версию (max __N),
-        # чтобы папка не пухла дублями (consolidate всё равно берёт последнюю)
-        def _ver(name: str) -> int:
-            m = re.search(r"__(\d+)(?=\.[^.]+$)", name)
-            return int(m.group(1)) if m else 0
-        groups: dict[str, list[Path]] = {}
-        for p in ATTACH_DIR.iterdir():
-            if p.is_file():
-                base = re.sub(r"__\d+(?=\.[^.]+$)", "", p.name)
-                groups.setdefault(base, []).append(p)
-        removed = 0
-        for base, paths in groups.items():
-            for old in sorted(paths, key=lambda p: _ver(p.name))[:-1]:
-                try:
-                    old.unlink(); removed += 1
-                except OSError:
-                    pass
-        log(f"[INFO] Удалено старых версий вложений: {removed}; "
-            f"осталось файлов: {sum(1 for _ in ATTACH_DIR.iterdir())}")
+            base_uid[key] = uid
+        bu_path.write_text(json.dumps(base_uid, ensure_ascii=False, indent=2), encoding="utf-8")
+        log(f"[INFO] Файлов во вложениях: {sum(1 for _ in ATTACH_DIR.iterdir())}")
 
         log(f"[DONE] Скачано вложений: {saved}")
         log(f"[DONE] Дата писем: {latest_date.isoformat()}")
@@ -276,7 +275,7 @@ def main() -> int:
         meta = BASE / "logs" / "last_fetch.meta"
         meta.write_text(
             f"date={latest_date.isoformat()}\n"
-            f"mails={len(new_uids)}\n"
+            f"mails={len(to_dl)}\n"
             f"files={saved}\n"
             f"window_uids={len(win_uids)}\n"
             f"folder={real_folder}\n",

@@ -263,7 +263,7 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
             .groupby(["Подразделение", "Час"])["Количство машин, шт"].sum())
     reason_h = (day_idle.groupby(["Подразделение", "Час"])["Примечание"]
                 .agg(lambda s: "; ".join(dict.fromkeys(
-                    x.strip() for x in s.astype(str) if x.strip() and x.strip() != "nan"))))
+                    t for t in (str(x).strip() for x in s) if t and t != "nan"))))
     hourly_rows = []
     for unit in sorted(day_tr_all["Подразделение"].unique()):
         for h in range(24):
