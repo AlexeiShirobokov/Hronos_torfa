@@ -115,8 +115,8 @@ def _plan_fact_block(m: dict) -> str:
             '<div style="color:#57606a;font-size:13px;">План = суточная производительность '
             'приборов (СБ-2.1/ГИТ-62 — 2400 м³, ПБШ-100/СБ-1.7 — 1200) × число приборов '
             f'подразделения. Текущий — накоплено за <b>{escape(win)}</b> текущих суток; '
-            'ожидаемый — средний темп текущих суток × 24 ч (не более плана); средний — за '
-            'предыдущие 7 дней.</div>'
+            'ожидаемый — средний темп текущих суток × 24 ч; средний — за предыдущие 7 дней.'
+            '</div>'
             f'<table>{head}{body}</table>')
 
 
@@ -159,29 +159,30 @@ def _hourly_blocks(m: dict) -> str:
 
 
 # ── 4–5. Динамика машин «час × дата» по материалам ────────────────────────────
+def _matrix_table(d: dict, label: str, tag: str = "h4") -> str:
+    """Одна матрица «час × дата» (пустые часы пропускаются); '' если данных нет."""
+    if not d or not d.get("dates"):
+        return ""
+    dates = d["dates"]
+    body = ""
+    shown = 0
+    for r in d["rows"]:
+        vals = [int(r.get(c, 0) or 0) for c in dates]
+        if not any(vals):
+            continue
+        shown += 1
+        cells = [r["hour"]] + [_fmt_int(v) if v else "—" for v in vals]
+        body += _row(cells, "#ffffff")
+    if not shown:
+        return ""
+    head = _th("Час", *[_short_date(c) for c in dates])
+    return f"<{tag}>{label}</{tag}><table>{head}{body}</table>"
+
+
 def _dyn_tables(dyn: dict, tag: str = "h4") -> str:
-    """Таблицы «час × дата» для торфа и песков; пустые часы пропускаются."""
-    out = []
-    for mat, label in (("Торф", "Торф"), ("Песок", "Пески")):
-        d = dyn.get(mat)
-        if not d or not d.get("dates"):
-            continue
-        dates = d["dates"]
-        body = ""
-        shown = 0
-        for r in d["rows"]:
-            vals = [int(r.get(c, 0) or 0) for c in dates]
-            if not any(vals):
-                continue
-            shown += 1
-            cells = [r["hour"]] + [_fmt_int(v) if v else "—" for v in vals]
-            body += _row(cells, "#ffffff")
-        if not shown:
-            continue
-        head = _th("Час", *[_short_date(c) for c in dates])
-        out.append(f'<{tag} style="margin:10px 0 2px;">{label}</{tag}>'
-                   f'<table>{head}{body}</table>')
-    return "".join(out)
+    """Таблицы «час × дата» для торфа и песков (без склада); пустые часы пропускаются."""
+    return "".join(_matrix_table(dyn.get(mat), label, tag)
+                   for mat, label in (("Торф", "Торф"), ("Песок", "Пески")))
 
 
 def _dynamics_block(m: dict) -> str:
@@ -236,13 +237,34 @@ def _pesok_devices_block(m: dict) -> str:
     return "".join(out) if has_any else ""
 
 
-# ── 7. Аналитика откатки ──────────────────────────────────────────────────────
+# ── 7. Вывоз песков на склад (без названия прибора) ───────────────────────────
+def _sklad_block(m: dict) -> str:
+    dyn = m.get("mach_dynamics", {}) or {}
+    dyn_u = m.get("mach_dynamics_unit", {}) or {}
+    overall = _matrix_table(dyn.get("Песок_склад"), "По предприятию", "h4")
+    unit_tables = []
+    for unit in sorted(dyn_u):
+        t = _matrix_table((dyn_u[unit] or {}).get("Песок_склад"), escape(unit), "h5")
+        if t:
+            unit_tables.append(t)
+    if not overall and not unit_tables:
+        return ""
+    body = overall
+    if unit_tables:
+        body += "<h4>По подразделениям</h4>" + "".join(unit_tables)
+    return ('<h3>7. Вывоз песков на склад (машины, час×дата)</h3>'
+            '<div style="color:#57606a;font-size:13px;">Пески без названия промывочного '
+            'прибора — вывоз на склад; в «Пески» (KPI, почасовка, динамика, приборы) и в '
+            'план/факт не входят.</div>' + body)
+
+
+# ── 8. Аналитика откатки ──────────────────────────────────────────────────────
 def _otkatka_block(m: dict) -> str:
     units = m.get("otkatka_unit", [])
     dyn = m.get("otkatka_dyn", {}) or {}
     if not units and not dyn.get("rows"):
         return ""
-    out = ['<h3>7. Аналитика откатки (среднее расстояние транспортировки, м)</h3>'
+    out = ['<h3>8. Аналитика откатки (среднее расстояние транспортировки, м)</h3>'
            '<div style="color:#57606a;font-size:13px;">Откатка — дистанция транспортировки; '
            'среднее взвешено по числу машин. Длиннее откатка → дороже и дольше рейс.</div>']
     if units:
@@ -288,7 +310,7 @@ def _idle_reasons_block(m: dict) -> str:
     rows = m.get("idle_reasons", [])
     dyn_html = _idle_dyn_table(m)
     if not rows:
-        return ('<h3>8. Аналитика причин простоя</h3>'
+        return ('<h3>9. Аналитика причин простоя</h3>'
                 '<p>Простои за текущие сутки не зафиксированы.</p>' + dyn_html)
     planned = sum(r["hours"] for r in rows if r["kind"] == "плановый")
     unplanned = sum(r["hours"] for r in rows if r["kind"] == "внеплановый")
@@ -303,7 +325,7 @@ def _idle_reasons_block(m: dict) -> str:
                f'плановые (обед/пересменка/ЕТО) — {_fmt_int(planned)} ч · '
                f'<span style="color:#d1242f;">внеплановые (поломки/нет напряжения) — '
                f'{_fmt_int(unplanned)} ч</span>.</p>')
-    return (f'<h3>8. Аналитика причин простоя</h3>{summary}'
+    return (f'<h3>9. Аналитика причин простоя</h3>{summary}'
             f'<h4>За текущие сутки</h4>'
             f'<table>{head}{body}</table>'
             + dyn_html)
@@ -341,6 +363,7 @@ def build_html(m: dict, note: str, alerts: list[dict]) -> str:
         + _dynamics_block(m)
         + _dynamics_unit_block(m)
         + _pesok_devices_block(m)
+        + _sklad_block(m)
         + _otkatka_block(m)
         + _idle_reasons_block(m)
         + '<p style="color:#8c959f;font-size:12px;margin-top:16px;">'

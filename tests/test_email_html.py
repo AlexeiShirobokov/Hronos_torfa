@@ -14,6 +14,7 @@ class TestEmailHtml(unittest.TestCase):
         self.assertIn("Почасовая", html)                # раздел почасовки
         self.assertIn("План/факт по пескам", html)      # раздел 2 план/факт
         self.assertIn("% плана (прогноз)", html)         # колонка прогноза
+        self.assertIn("Вывоз песков на склад", html)     # отдельный раздел склада
         self.assertIn("разрезе подразделений", html)    # динамика по подразделениям
         self.assertIn("Аналитика откатки", html)        # откатка
         self.assertIn("Динамика простоев", html)        # динамика простоев

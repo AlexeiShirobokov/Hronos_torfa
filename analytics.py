@@ -231,6 +231,11 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
     # ── Транспортировка торф+песок: материал/смена + машины по дням/часам/сменам ──
     transport = df[df["Передел"].astype(str).str.strip().isin(TRANSPORT_PEREDELY)].copy()
     transport["Материал"] = transport["Передел"].astype(str).str.strip().map(TRANSPORT_PEREDELY)
+    # пески без названия прибора = вывоз на склад: отдельный «материал», исключается
+    # из всех пески-таблиц (KPI/почасовка/динамика/приборы), показывается отдельно
+    _pm = transport["Марка промывочного прибора"].apply(_dev_mark)
+    transport.loc[(transport["Материал"] == "Песок") & (_pm == "Без прибора"),
+                  "Материал"] = "Песок_склад"
     transport["Смена"] = transport["Час"].apply(_shift)
 
     mach_by_day = (transport.groupby(["ОперДата", "Материал"])
@@ -246,7 +251,7 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
 
     # пивоты «час × опер-дата» по материалам (операционный порядок часов)
     mach_hour_pivot = {}
-    for mat in ("Торф", "Песок"):
+    for mat in ("Торф", "Песок", "Песок_склад"):
         sub = transport[(transport["Материал"] == mat) & transport["_hour"].notna()]
         if len(sub):
             piv = (sub.pivot_table(index="_hour", columns="ОперДата",
@@ -263,7 +268,7 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
     mach_hour_pivot_unit = {}
     for unit in sorted(transport["Подразделение"].unique()):
         per_mat = {}
-        for mat in ("Торф", "Песок"):
+        for mat in ("Торф", "Песок", "Песок_склад"):
             sub = transport[(transport["Подразделение"] == unit)
                             & (transport["Материал"] == mat) & transport["_hour"].notna()]
             if len(sub):
@@ -383,12 +388,11 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
     for unit, g in roster.groupby("Подразделение"):
         insts = g[["_mark", "_inv"]].drop_duplicates()
         plan_by_unit[unit] = int(sum(_plan_rate(m) for m in insts["_mark"]))
-    # в план/факт идёт только то, что ушло на НАЗВАННЫЙ прибор; вывоз на склад
-    # (без прибора) в Текущий/Средний/Ожидаемый не считаем
-    pes_dev = pes_all[pes_all["_mark"] != "Без прибора"]
-    pes_win = (pes_dev[pes_dev["_hour"].isin(elapsed)]
+    # pes_all = «Песок» = только на названный прибор (вывоз на склад уже отнесён
+    # к материалу «Песок_склад» и сюда не попадает)
+    pes_win = (pes_all[pes_all["_hour"].isin(elapsed)]
                .groupby(["Подразделение", "ОперДата"])["Обьем работ, м3"].sum())
-    pes_full = pes_dev.groupby(["Подразделение", "ОперДата"])["Обьем работ, м3"].sum()
+    pes_full = pes_all.groupby(["Подразделение", "ОперДата"])["Обьем работ, м3"].sum()
     n_elapsed = len(op_hours)        # истёкших операционных часов в сутках (для экстраполяции)
     pf_rows = []
     for unit in sorted(set(transport["Подразделение"].unique()) | set(plan_by_unit)):
@@ -398,11 +402,8 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
         prior_f = fser[[d for d in fser.index if d < rd_date]].sort_index().tail(7)
         avg_f = float(prior_f.mean()) if len(prior_f) else 0.0
         plan = int(plan_by_unit.get(unit, 0))
-        # ожидаемый за сутки: средний темп ТЕКУЩИХ суток (cur/истёкшие часы) × 24 опер-часа,
-        # но не больше плановой производительности приборов (плант больше не переработает)
+        # ожидаемый за сутки: средний темп ТЕКУЩИХ суток (cur/истёкшие часы) × 24 опер-часа
         expected = cur * 24.0 / n_elapsed if n_elapsed else cur
-        if plan:
-            expected = min(expected, float(plan))
         pf_rows.append({
             "Подразделение": unit, "Текущий": round(cur), "Средний_7дн": round(avg_f),
             "План": plan, "Ожидаемый": round(expected),
@@ -417,6 +418,9 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
     day_all["_per"] = day_all["Передел"].astype(str).str.strip()
     day_tr_all = day_all[day_all["_per"].isin(TRANSPORT_PEREDELY)].copy()
     day_tr_all["Материал"] = day_tr_all["_per"].map(TRANSPORT_PEREDELY)
+    _pm_d = day_tr_all["Марка промывочного прибора"].apply(_dev_mark)
+    day_tr_all.loc[(day_tr_all["Материал"] == "Песок") & (_pm_d == "Без прибора"),
+                   "Материал"] = "Песок_склад"
     day_idle = day_all[day_all["_per"] == "простой"].dropna(subset=["Час"])
     mt_h = (day_tr_all[day_tr_all["Материал"] == "Торф"]
             .groupby(["Подразделение", "Час"])["Количство машин, шт"].sum())
