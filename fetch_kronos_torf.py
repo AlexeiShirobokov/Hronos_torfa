@@ -24,11 +24,16 @@ import imaplib
 import json
 import os
 import re
+import socket
 import sys
 from datetime import datetime, date, timedelta
 from pathlib import Path
 
 imaplib._MAXLINE = 10_000_000
+# сокет-таймаут на все сетевые операции: fetch не зависнет навсегда, если IMAP
+# перестанет отвечать. Без этого зависший FETCH блокирует launchd и пропускает
+# следующие запуски (инцидент 2026-07-01: висел 2.5 ч, пропустил 07:10 и 08:10).
+socket.setdefaulttimeout(120)
 
 BASE = Path(__file__).resolve().parent
 ENV_PATH = BASE / ".env"
