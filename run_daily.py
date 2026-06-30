@@ -11,6 +11,10 @@ BASE = Path(__file__).resolve().parent
 LOGS = BASE / "logs"
 STATE = BASE / "state"
 PY = sys.executable
+# Алерты (аномалии volume_drop/idle/… и технические сбои) временно ОТКЛЮЧЕНЫ:
+# получателям они шли как путаница. Отправляем только стандартный отчёт.
+# Вернуть — поставить True (тогда уйдут всем из recipients.txt).
+ALERTS_ENABLED = False
 
 
 def load_env() -> dict:
@@ -81,6 +85,9 @@ def _send_alert_email(env: dict, subject: str, body: str) -> None:
 
 def alert(env: dict, subject: str, body: str, key: str) -> None:
     """Email-алерт с анти-спамом: один и тот же key за дату отправляется один раз."""
+    if not ALERTS_ENABLED:
+        log(f"[alert] отключены — пропуск: {key}")
+        return
     STATE.mkdir(parents=True, exist_ok=True)
     today = datetime.now().strftime("%Y-%m-%d")
     full = f"{today}|{key}"
