@@ -457,6 +457,38 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
         piv.columns.name = None
         pesok_devices[unit] = piv
 
+    # ── Пески по наряд-заданию: объём м³, Дата.Факт × Час × подразделения ─────────
+    # (сырые «Транспортировка песков», как ручная сводная; группировка по «Дата выдачи
+    # наряд-задания» — ночная смена относится к тому же наряду). Последний наряд.
+    NARYAD_COL = "Дата выдачи наряд-задания"
+    pes_raw = df[df["Передел"].astype(str).str.strip() == "Транспортировка песков"].copy()
+    pn_units = sorted(pes_raw["Подразделение"].dropna().astype(str).str.strip().unique())
+    pn_rows = []
+    if NARYAD_COL in df.columns and len(pes_raw):
+        pes_raw["_nz"] = pd.to_datetime(pes_raw[NARYAD_COL], errors="coerce").dt.date
+        pes_raw["_fakt"] = pes_raw["Дата. Факт"].dt.date
+        nz_dates = sorted([d for d in pes_raw["_nz"].dropna().unique()])
+        for nz in nz_dates[-1:]:
+            g_nz = pes_raw[pes_raw["_nz"] == nz]
+            for fakt in sorted([d for d in g_nz["_fakt"].dropna().unique()]):
+                g_f = g_nz[g_nz["_fakt"] == fakt]
+                sub = {u: float(g_f[g_f["Подразделение"] == u]["Обьем работ, м3"].sum()) for u in pn_units}
+                pn_rows.append({"Наряд": nz.isoformat(), "Дата.Факт": fakt.isoformat(), "Час": "",
+                                **{u: (round(sub[u]) if sub[u] else None) for u in pn_units},
+                                "Итого": round(sum(sub.values())) or None})
+                for h in sorted([x for x in g_f["_hour"].dropna().unique()]):
+                    hv = {u: float(g_f[(g_f["_hour"] == h) & (g_f["Подразделение"] == u)]["Обьем работ, м3"].sum())
+                          for u in pn_units}
+                    tot = sum(hv.values())
+                    pn_rows.append({"Наряд": "", "Дата.Факт": "", "Час": f"{int(h):02d}:00",
+                                    **{u: (round(hv[u]) if hv[u] else None) for u in pn_units},
+                                    "Итого": round(tot) if tot else None})
+            gt = {u: float(g_nz[g_nz["Подразделение"] == u]["Обьем работ, м3"].sum()) for u in pn_units}
+            pn_rows.append({"Наряд": "Общий итог", "Дата.Факт": "", "Час": "",
+                            **{u: (round(gt[u]) if gt[u] else None) for u in pn_units},
+                            "Итого": round(sum(gt.values())) or None})
+    pesok_naryad = pd.DataFrame(pn_rows, columns=["Наряд", "Дата.Факт", "Час", *pn_units, "Итого"])
+
     # аналитика причин простоя за сутки (плановые/внеплановые, окно истёкших часов)
     di = day_all[(day_all["_per"] == "простой") & day_all["_hour"].isin(elapsed)].copy()
     di["Причина"] = di["Примечание"].astype(str).str.strip().replace({"nan": "—", "": "—"})
@@ -493,6 +525,7 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
         "hourly_unit": hourly_unit, "idle_reasons": idle_reasons,
         "idle_dyn": idle_dyn, "pesok_devices": pesok_devices,
         "otkatka_unit": otkatka_unit, "otkatka_dyn": otkatka_dyn,
+        "pesok_naryad": pesok_naryad,
     }
 
 
