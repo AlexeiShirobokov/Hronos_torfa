@@ -116,6 +116,8 @@ def main() -> int:
     ap.add_argument("--to", action="append", default=[], help="получатель; можно указать несколько раз, заменяет recipients.txt")
     ap.add_argument("--xlsx", type=Path, help="путь к xlsx (по умолчанию — последний)")
     ap.add_argument("--empty-body", action="store_true", help="отправить письмо без текста в теле")
+    ap.add_argument("--html-file", type=Path, help="готовое HTML-тело письма из файла")
+    ap.add_argument("--text-file", type=Path, help="текстовый фолбэк тела письма из файла")
     ap.add_argument("--subject", help="тема письма")
     args = ap.parse_args()
 
@@ -146,7 +148,12 @@ def main() -> int:
         log(f"[ERR] не найден xlsx в {OUT}")
         return 5
 
-    if args.empty_body:
+    if args.html_file:
+        report_date = None
+        html = args.html_file.read_text(encoding="utf-8")
+        text = (args.text_file.read_text(encoding="utf-8")
+                if args.text_file and args.text_file.exists() else "Отчёт во вложении.")
+    elif args.empty_body:
         report_date = None
         html = None
         text = ""

@@ -556,7 +556,7 @@ static void ApplyPivotPageFilters(
         RemapPivotCacheRecordIndexes(files, cols.DateIssue - 1, dateFilter.OldToNewIndex);
         var peredelFilter = RebuildPeredelCacheItems(cacheFields[cols.Peredel - 1], DistinctTexts(data, cols.Peredel), selectedSet);
         RemapPivotCacheRecordIndexes(files, cols.Peredel - 1, peredelFilter.OldToNewIndex);
-        var timeSort = SortTimeCacheItems(cacheFields[cols.Time - 1]);
+        var timeSort = RebuildTimeCacheItems(cacheFields[cols.Time - 1]);
         RemapPivotCacheRecordIndexes(files, cols.Time - 1, timeSort.OldToNewIndex);
         var dateFactSort = SortDateCacheItems(cacheFields[cols.DateFact - 1]);
         RemapPivotCacheRecordIndexes(files, cols.DateFact - 1, dateFactSort.OldToNewIndex);
@@ -743,60 +743,6 @@ static PeredelFilterIndex RebuildPeredelCacheItems(
     return new PeredelFilterIndex(selectedIndexes, newValues.Count + (containsBlank ? 1 : 0), oldToNew);
 }
 
-static TimeSortIndex SortTimeCacheItems(XElement cacheField)
-{
-    var ns = cacheField.Name.Namespace;
-    var oldShared = cacheField.Element(ns + "sharedItems");
-    if (oldShared is null)
-        return new TimeSortIndex(0, []);
-
-    var oldItems = oldShared.Elements().ToList();
-    var timedItems = new List<(int OldIndex, XElement Item, int Minutes, string TieBreaker)>();
-    var blankItems = new List<(int OldIndex, XElement Item)>();
-    var otherItems = new List<(int OldIndex, XElement Item, string TieBreaker)>();
-
-    for (var i = 0; i < oldItems.Count; i++)
-    {
-        var item = oldItems[i];
-        if (item.Name.LocalName == "m")
-        {
-            blankItems.Add((i, new XElement(item)));
-            continue;
-        }
-
-        if (TryParseCacheTime(item, out var minutes))
-            timedItems.Add((i, new XElement(item), minutes, CacheItemText(item)));
-        else
-            otherItems.Add((i, new XElement(item), CacheItemText(item)));
-    }
-
-    var ordered = new List<(int OldIndex, XElement Item)>();
-    ordered.AddRange(
-        timedItems
-            .OrderBy(item => item.Minutes)
-            .ThenBy(item => item.TieBreaker, StringComparer.Ordinal)
-            .Select(item => (item.OldIndex, item.Item))
-    );
-    ordered.AddRange(
-        otherItems
-            .OrderBy(item => item.TieBreaker, StringComparer.Ordinal)
-            .Select(item => (item.OldIndex, item.Item))
-    );
-    ordered.AddRange(blankItems);
-
-    var oldToNew = new Dictionary<int, int>();
-    var newShared = new XElement(oldShared.Name, oldShared.Attributes());
-    newShared.RemoveNodes();
-    for (var i = 0; i < ordered.Count; i++)
-    {
-        oldToNew[ordered[i].OldIndex] = i;
-        newShared.Add(ordered[i].Item);
-    }
-    newShared.SetAttributeValue("count", ordered.Count.ToString(CultureInfo.InvariantCulture));
-    ReplaceSharedItems(cacheField, newShared);
-    return new TimeSortIndex(ordered.Count, oldToNew);
-}
-
 static TimeSortIndex SortDateCacheItems(XElement cacheField)
 {
     var ns = cacheField.Name.Namespace;
@@ -873,6 +819,66 @@ static bool TryParseCacheTime(XElement item, out int minutes)
         return true;
     }
     return false;
+}
+
+// Приводит «Время» к единому виду: текст «HH:MM» (без секунд), уникально и по
+// возрастанию. Устраняет «разношёрстицу» в фильтре сводной, когда часть значений
+// хранится как время-сериал (00:00:00), а часть как текст (14:00) — тогда в
+// выпадашке они двоятся и идут двумя блоками.
+static TimeSortIndex RebuildTimeCacheItems(XElement cacheField)
+{
+    var ns = cacheField.Name.Namespace;
+    var oldShared = cacheField.Element(ns + "sharedItems");
+    if (oldShared is null)
+        return new TimeSortIndex(0, []);
+
+    var oldItems = oldShared.Elements().ToList();
+    var minutesByOld = new Dictionary<int, int>();
+    var blankOld = new List<int>();
+    var containsBlank = oldShared.Attribute("containsBlank")?.Value == "1";
+    for (var i = 0; i < oldItems.Count; i++)
+    {
+        var item = oldItems[i];
+        if (item.Name.LocalName == "m")
+        {
+            blankOld.Add(i);
+            containsBlank = true;
+            continue;
+        }
+        if (TryParseCacheTime(item, out var minutes))
+            minutesByOld[i] = minutes;
+        else
+            blankOld.Add(i);   // непарсируемое трактуем как пусто (в конец)
+    }
+
+    var orderedMinutes = minutesByOld.Values.Distinct().OrderBy(m => m).ToList();
+    var newIndexByMinutes = new Dictionary<int, int>();
+    for (var i = 0; i < orderedMinutes.Count; i++)
+        newIndexByMinutes[orderedMinutes[i]] = i;
+
+    var oldToNew = new Dictionary<int, int>();
+    foreach (var kv in minutesByOld)
+        oldToNew[kv.Key] = newIndexByMinutes[kv.Value];
+    var blankNew = orderedMinutes.Count;   // пустые/непарсируемые — после всех времён
+    foreach (var b in blankOld)
+        oldToNew[b] = blankNew;
+
+    var newShared = new XElement(ns + "sharedItems",
+        new XAttribute("containsNonDate", "1"),
+        new XAttribute("containsDate", "0"),
+        new XAttribute("containsString", "1"),
+        new XAttribute("count", (orderedMinutes.Count + (containsBlank ? 1 : 0))
+            .ToString(CultureInfo.InvariantCulture)));
+    if (containsBlank)
+        newShared.SetAttributeValue("containsBlank", "1");
+    foreach (var m in orderedMinutes)
+        newShared.Add(new XElement(ns + "s",
+            new XAttribute("v", $"{m / 60:D2}:{m % 60:D2}")));
+    if (containsBlank)
+        newShared.Add(new XElement(ns + "m"));
+
+    ReplaceSharedItems(cacheField, newShared);
+    return new TimeSortIndex(orderedMinutes.Count + (containsBlank ? 1 : 0), oldToNew);
 }
 
 static string CacheItemText(XElement item) => item.Attribute("v")?.Value ?? "";

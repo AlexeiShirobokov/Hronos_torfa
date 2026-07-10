@@ -23,7 +23,7 @@ TARGET_NAME = "Хронометраж транспортировки торфо�
 TARGET = OUT / TARGET_NAME
 SUBJECT = "Хронометраж транспортировки торфов и песков"
 DOTNET = Path("/usr/local/share/dotnet/dotnet")
-TODAY_REPORT_CUTOFF = time(10, 20)
+TODAY_REPORT_CUTOFF = time(10, 0)
 
 
 def resolve_dotnet() -> str:
@@ -161,19 +161,46 @@ def build_book(no_fetch: bool) -> Path:
     return parse_final_path(proc.stdout + "\n" + proc.stderr) or latest_final()
 
 
-def send_book(no_send: bool) -> None:
+def build_email_body() -> tuple[Path, Path] | None:
+    """HTML+текст тела письма из финального реестра. При ошибке — None (шлём без тела)."""
+    try:
+        import pandas as pd  # тяжёлый импорт только на отправке
+        import peski_email_body
+
+        report_date = report_date_for_run()
+        df = pd.read_excel(TARGET, sheet_name="Сводный_Реестр")
+        html, text = peski_email_body.build_body(df, report_date)
+        STATE.mkdir(parents=True, exist_ok=True)
+        html_path = STATE / "last_body.html"
+        text_path = STATE / "last_body.txt"
+        html_path.write_text(html, encoding="utf-8")
+        text_path.write_text(text, encoding="utf-8")
+        log(f"тело письма построено: {len(html.encode('utf-8')) / 1024:.1f} КБ, дата {report_date}")
+        return html_path, text_path
+    except Exception as exc:
+        log(f"[WARN] тело письма не построено, отправлю без тела: {type(exc).__name__}: {exc}")
+        return None
+
+
+def send_book(no_send: bool, to_addrs: list[str] | None = None) -> None:
     if no_send:
         log("отправка пропущена: --no-send")
         return
     cmd = [
         sys.executable,
         "send_email.py",
-        "--empty-body",
         "--subject",
         SUBJECT,
         "--xlsx",
         str(TARGET),
     ]
+    for addr in to_addrs or []:
+        cmd += ["--to", addr]
+    body = build_email_body()
+    if body:
+        cmd += ["--html-file", str(body[0]), "--text-file", str(body[1])]
+    else:
+        cmd += ["--empty-body"]
     proc = run_cmd(cmd, cwd=BASE, timeout=180)
     if proc.stdout:
         log_key_lines(proc.stdout)
@@ -187,6 +214,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Автосборка и рассылка хронометража торфов и песков")
     parser.add_argument("--no-fetch", action="store_true", help="тест: не скачивать новые письма")
     parser.add_argument("--no-send", action="store_true", help="тест: не отправлять письмо")
+    parser.add_argument("--to", action="append", default=[],
+                        help="тест: отправить только на указанный адрес (заменяет recipients.txt)")
     args = parser.parse_args(argv)
 
     STATE.mkdir(parents=True, exist_ok=True)
@@ -204,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
             validate_xlsx(final_path)
             shutil.copy2(final_path, TARGET)
             validate_xlsx(TARGET)
-            send_book(args.no_send)
+            send_book(args.no_send, args.to)
             log("DONE")
             return 0
         except Exception as exc:
