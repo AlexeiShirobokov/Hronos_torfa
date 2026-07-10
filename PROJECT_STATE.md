@@ -68,12 +68,13 @@
 | `consolidate.py` | Группирует вложения по базовому имени (`__N` — версия), берёт последнюю версию каждой группы, читает лист «Реестр», объединяет в один лист | `input/mail_attachments/*` | `output/Хронометраж_транспортировки_торфов_<date>.xlsx` (1 лист «Сводный_Реестр», 23 колонки без служебных), `logs/consolidated.csv`, `logs/last_consolidate.json` |
 | `build_pdf.py` | matplotlib PdfPages, шрифт DejaVu Sans (кириллица). 14 страниц A4. | `logs/consolidated.csv` | `output/Аналитика_хронометраж_торфов_<date>.pdf`, `logs/last_pdf.json` |
 | `send_email.py` | smtplib SMTP_SSL 465. Логин/пароль из `.env` (`SMTP_LOGIN`/`SMTP_PASSWORD` — опционально, иначе `YANDEX_LOGIN`/`YANDEX_APP_PASSWORD`). `--check` — только проверка логина. | `recipients.txt`, последние файлы из `output/` | письма с двумя вложениями (xlsx, pdf), `logs/mail.log` |
+| `run_hronos_peski_autosend.py` | Текущий автосценарий: свежий IMAP-fetch → `parallel_hronos` Python-консолидация `.xlsx/.xlsb` → C# сводная/умная таблица → проверка свежести и объёмов → файл `Хронометраж транспортировки торфов и песков.xlsx` → email без текста всем из `recipients.txt`. | `.env`, `input/mail_attachments`, `parallel_hronos/`, `recipients.txt` | `output/Хронометраж транспортировки торфов и песков.xlsx`, `logs/hronos_peski_autosend.log`, письмо с вложением |
 | `run_daily.py` | Оркестратор: fetch → consolidate → build_pdf → уведомление боту через Telegram API (inline-кнопки «✅ Отправить» / «✖️ Отмена»). **Сам не отправляет письма.** | всё выше | `state/last_run.json`, `logs/run_daily.log` |
 | `bot.py` | Polling-бот (urllib, без зависимостей). Команды разрешены только admin (см. §8). Обрабатывает callback кнопок. | `.env` (`BOT_TOKEN` или `api_token`), `recipients.txt`, `output/` | сообщения в Telegram, мутации `recipients.txt`, запуск дочерних процессов |
 
 ### launchd
 
-- `scripts/com.alexei.hronos_torfa.plist` — пайплайн, `StartCalendarInterval` 11 точек (Hour=9..19, Minute=10), `RunAtLoad=false`.
+- `scripts/com.alexei.hronos_torfa.plist` — текущий автозапуск `run_hronos_peski_autosend.py`, каждый час `06:15`–`22:15`, `RunAtLoad=false`.
 - `scripts/com.alexei.hronos_torfa_bot.plist` — бот, `RunAtLoad=true`, `KeepAlive=true`.
 - `scripts/install_launchd.sh` — копирует plist в `~/Library/LaunchAgents/`, делает `bootout`+`bootstrap`+`enable` через `launchctl`.
 - `scripts/uninstall_launchd.sh` — отключает и удаляет.

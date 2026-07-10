@@ -63,6 +63,49 @@ $PY run_daily.py            # весь пайплайн + рассылка
 $PY send_email.py --check   # проверить SMTP-логин
 ```
 
+## Qwen с памятью проекта
+
+`qwen_bootstrap.py` — локальная обвязка для Qwen MLX. Она собирает контекст
+текущего проекта (`AGENTS.md`, `PROJECT_STATE.md`, `README.md`, дерево файлов),
+ищет релевантные фрагменты в универсальных Obsidian-правилах и явно добавляет
+это в prompt перед вызовом `mlx_lm.server`.
+
+Запустить Qwen:
+
+```bash
+qwen-mlx start
+```
+
+Посмотреть, какой контекст будет отправлен модели, без вызова Qwen:
+
+```bash
+python3 qwen_bootstrap.py --dry-run --sources "что важно знать об этом проекте"
+```
+
+Задать вопрос локальному Qwen с project bootstrap + universal RAG:
+
+```bash
+python3 qwen_bootstrap.py --sources "как безопасно изменить пайплайн рассылки"
+```
+
+Запуск из другого проекта:
+
+```bash
+python3 /Users/alexei/Claude_v1/qwen_bootstrap.py \
+  --project /path/to/another/project \
+  "сначала изучи проект и предложи план"
+```
+
+По умолчанию универсальные правила читаются из:
+
+```text
+/Users/alexei/Obsidian/Alexeids/Tech/ML-NLP/Agents
+```
+
+Обвязка не читает `.env`, не индексирует `input/`, `output/`, `logs/`, `state/`
+и не пишет индекс в Obsidian. Это RAG-lite без внешних пакетов; при необходимости
+его можно позже заменить на Qdrant/embeddings, сохранив тот же CLI.
+
 ## Тесты
 
 ```bash

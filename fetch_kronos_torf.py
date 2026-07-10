@@ -9,7 +9,7 @@
 2. Подключается к IMAP Яндекс 360 (imap.yandex.ru:993, SSL).
 3. Открывает папку IMAP_FOLDER (по умолчанию Hronos_torfa).
 4. Находит самую позднюю дату писем (по дате внутри письма).
-5. Скачивает Excel-вложения (.xlsx, .xls, .xlsm) только из этих писем
+5. Скачивает Excel-вложения (.xlsx, .xls, .xlsm, .xlsb) только из этих писем
    в input/mail_attachments/.
 6. Пишет лог в logs/fetch_<timestamp>.log и краткий итог в stdout.
 
@@ -40,7 +40,7 @@ ENV_PATH = BASE / ".env"
 ATTACH_DIR = BASE / "input" / "mail_attachments"
 LOG_DIR = BASE / "logs"
 STATE = BASE / "state"
-EXCEL_EXT = {".xlsx", ".xls", ".xlsm"}
+EXCEL_EXT = {".xlsx", ".xls", ".xlsm", ".xlsb"}
 
 
 def load_env(path: Path) -> dict:
@@ -213,7 +213,7 @@ def main() -> int:
                     dn = str(email.header.make_header(email.header.decode_header(w)))
                 except Exception:
                     continue
-                if dn.lower().endswith((".xlsx", ".xls", ".xlsm")):
+                if Path(dn).suffix.lower() in EXCEL_EXT:
                     uid_key[mu.group(1)] = dn
                     break
 
@@ -259,8 +259,9 @@ def main() -> int:
                 # пишем свежую версию как базовое имя, удалив прежние версии этого файла
                 # (включая старые суффиксы __N) — «последняя версия» = только что скачанная
                 base_name = re.sub(r"__\d+(?=\.[^.]+$)", "", fname)
+                source_key = _source_key(base_name)
                 for old in list(ATTACH_DIR.glob("*")):
-                    if old.is_file() and re.sub(r"__\d+(?=\.[^.]+$)", "", old.name) == base_name:
+                    if old.is_file() and _source_key(re.sub(r"__\d+(?=\.[^.]+$)", "", old.name)) == source_key:
                         try:
                             old.unlink()
                         except OSError:
@@ -293,6 +294,11 @@ def main() -> int:
         except Exception:
             pass
         log_f.close()
+
+
+def _source_key(name: str) -> str:
+    path = Path(name)
+    return re.sub(r"\s+", " ", path.with_suffix("").name).strip().casefold()
 
 
 if __name__ == "__main__":

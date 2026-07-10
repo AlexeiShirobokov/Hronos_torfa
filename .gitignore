@@ -8,6 +8,7 @@ input/
 output/
 logs/
 state/
+_cleanup_pending_delete/
 
 # Пользовательские заметки
 AGENTS.md
@@ -27,6 +28,10 @@ venv/
 # IDE
 .vscode/
 .idea/
+
+# .NET build artifacts (native pivot tool tools/pivot)
+tools/pivot/bin/
+tools/pivot/obj/
 
 # временные файлы тестов
 tests/_tmp/

@@ -10,11 +10,22 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 LOGS = BASE / "logs"
 STATE = BASE / "state"
+OUT = BASE / "output"
 PY = sys.executable
+# Нативная сводная Excel: финальную книгу собирает BookBuilder (C#/EPPlus) из шаблона
+# со ГОТОВОЙ сводной на умной таблице «Таблица1», подменяя данные реестра свежими.
+DOTNET = "/usr/local/share/dotnet/dotnet"
+BOOKBUILDER_DLL = BASE / "tools" / "pivot" / "bin" / "Release" / "net9.0" / "PivotBuilder.dll"
+PIVOT_TEMPLATE = BASE / "tools" / "pivot" / "pivot_template.xlsx"
 # Алерты (аномалии volume_drop/idle/… и технические сбои) временно ОТКЛЮЧЕНЫ:
 # получателям они шли как путаница. Отправляем только стандартный отчёт.
 # Вернуть — поставить True (тогда уйдут всем из recipients.txt).
 ALERTS_ENABLED = False
+# Авто-рассылка получателям временно ОТКЛЮЧЕНА (по просьбе Алексея, 2026-07-02):
+# дорабатываем нативную сводную, не спамим 5 боевых получателей. Пайплайн продолжает
+# собирать книгу (fetch→consolidate→build_xlsx→pivot), но письмо не отправляет.
+# Вернуть рассылку — поставить True.
+SEND_ENABLED = False
 
 
 def load_env() -> dict:
@@ -128,6 +139,43 @@ def _write_state(d: dict) -> None:
         json.dumps(d, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def build_pivot_book() -> None:
+    """Собирает финальную книгу из шаблона (готовая нативная сводная на умной таблице
+    «Таблица1»), подменяя данные реестра свежими, затем пост-обработка (ресайз таблицы +
+    refreshOnLoad). Не-фатально: при сбое отчёт всё равно уйдёт (без обновлённой сводной).
+    """
+    try:
+        books = sorted(OUT.glob("Хронометраж_транспортировки_торфов_*.xlsx"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        if not books:
+            log("[pivot][WARN] нет книги в output/ — пропуск сводной")
+            return
+        book = books[0]
+        if not PIVOT_TEMPLATE.exists():
+            log(f"[pivot][WARN] нет шаблона {PIVOT_TEMPLATE.name} — книга без сводной")
+            return
+        dotnet = DOTNET if Path(DOTNET).exists() else "dotnet"
+        if not BOOKBUILDER_DLL.exists():
+            log(f"[pivot][WARN] нет {BOOKBUILDER_DLL.name} — собрать: "
+                f"dotnet build -c Release в tools/pivot; книга без сводной")
+            return
+        log(f"→ BookBuilder {book.name}")
+        p = subprocess.run([dotnet, str(BOOKBUILDER_DLL), str(book), str(PIVOT_TEMPLATE)],
+                           cwd=str(BASE), capture_output=True, text=True, timeout=300)
+        if p.stdout:
+            log("[pivot] " + p.stdout.strip()[:500])
+        if p.stderr:
+            log("[pivot] STDERR: " + p.stderr.strip()[:500])
+        if p.returncode != 0:
+            log(f"[pivot][WARN] BookBuilder exit={p.returncode} — книга без обновлённой сводной")
+            return
+        import pivot_postprocess
+        ref = pivot_postprocess.postprocess(book)
+        log(f"[pivot] сводная материализована из «Таблица1» {ref}, refreshOnLoad=0")
+    except Exception as e:
+        log(f"[pivot][WARN] сбой сборки сводной: {e!r} — продолжаю без неё")
+
+
 def main() -> int:
     STATE.mkdir(parents=True, exist_ok=True)
     LOGS.mkdir(parents=True, exist_ok=True)
@@ -167,6 +215,9 @@ def main() -> int:
                       "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
         return 11
 
+    # финальная книга из шаблона с нативной сводной на умной таблице (до отправки письма)
+    build_pivot_book()
+
     # метрики уже записаны build_xlsx → state/last_metrics.json
     rc, _ = run("explain.py")
     if rc != 0:
@@ -181,10 +232,13 @@ def main() -> int:
         except Exception as e:
             log(f"[WARN] чтение last_alerts.json: {e!r}")
 
-    # авто-рассылка
-    rc, _ = run("send_email.py")
-    if rc != 0:
-        alert(env, "сбой отправки письма", f"send_email.py exit={rc}", key=f"fail_send:{rd}")
+    # авто-рассылка (временно отключена флагом SEND_ENABLED)
+    if SEND_ENABLED:
+        rc, _ = run("send_email.py")
+        if rc != 0:
+            alert(env, "сбой отправки письма", f"send_email.py exit={rc}", key=f"fail_send:{rd}")
+    else:
+        log("[send] рассылка получателям ОТКЛЮЧЕНА (SEND_ENABLED=False) — письмо не отправлено")
 
     _write_state({"ok": True, "report_date": rd,
                   "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

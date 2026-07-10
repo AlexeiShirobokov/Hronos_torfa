@@ -1,0 +1,11 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+input/*
+output/*
+logs/*
+!input/.gitkeep
+!output/.gitkeep
+!logs/.gitkeep
+tools/pivot/bin/
+tools/pivot/obj/

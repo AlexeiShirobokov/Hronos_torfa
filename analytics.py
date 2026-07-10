@@ -489,6 +489,30 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
                             "Итого": round(sum(gt.values())) or None})
     pesok_naryad = pd.DataFrame(pn_rows, columns=["Наряд", "Дата.Факт", "Час", *pn_units, "Итого"])
 
+    # источник для НАТИВНОЙ сводной Excel (лист «Данные_пески», скрыт) — 1:1 как в шаблоне
+    # Алексея (лист «Сводная_пески»): фильтры «Дата выдачи наряд-задания» + «Передел»,
+    # строки «Дата. Факт» + «Время», столбцы «Подразделение», значение Σ«Обьем работ, м3».
+    # Фильтруем до ПОСЛЕДНЕГО наряда и только «Транспортировка песков» → оба фильтра
+    # одно-значные (авто-выбор без ручного выделения, которое EPPlus не умеет, а
+    # refreshOnLoad ломает) → вид совпадает с эталоном и честно авто-обновляется.
+    # Даты реальные (формат «18 май» задаёт build_xlsx), «Время» — часовые метки «ЧЧ:00».
+    src_cols = ["Подразделение", "Передел", "Дата выдачи наряд-задания",
+                "Дата. Факт", "Время", "Обьем работ, м3"]
+    _nz_ok = NARYAD_COL in df.columns and len(pes_raw) and pes_raw["_nz"].notna().any()
+    if _nz_ok:
+        last_nz = max(d for d in pes_raw["_nz"].dropna().unique())
+        g = pes_raw[pes_raw["_nz"] == last_nz]
+        pesok_source = pd.DataFrame({
+            "Подразделение": g["Подразделение"].astype(str).str.strip(),
+            "Передел": "Транспортировка песков",
+            "Дата выдачи наряд-задания": pd.to_datetime(g["_nz"], errors="coerce"),
+            "Дата. Факт": pd.to_datetime(g["_fakt"], errors="coerce"),
+            "Время": g["_hour"].apply(lambda h: f"{int(h):02d}:00" if pd.notna(h) else ""),
+            "Обьем работ, м3": pd.to_numeric(g["Обьем работ, м3"], errors="coerce").fillna(0.0),
+        }).reset_index(drop=True)
+    else:
+        pesok_source = pd.DataFrame(columns=src_cols)
+
     # аналитика причин простоя за сутки (плановые/внеплановые, окно истёкших часов)
     di = day_all[(day_all["_per"] == "простой") & day_all["_hour"].isin(elapsed)].copy()
     di["Причина"] = di["Примечание"].astype(str).str.strip().replace({"nan": "—", "": "—"})
@@ -525,7 +549,7 @@ def compute(csv_path: Path, report_date: str | None = None) -> dict:
         "hourly_unit": hourly_unit, "idle_reasons": idle_reasons,
         "idle_dyn": idle_dyn, "pesok_devices": pesok_devices,
         "otkatka_unit": otkatka_unit, "otkatka_dyn": otkatka_dyn,
-        "pesok_naryad": pesok_naryad,
+        "pesok_naryad": pesok_naryad, "pesok_source": pesok_source,
     }
 
 

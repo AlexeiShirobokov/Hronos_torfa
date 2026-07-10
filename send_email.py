@@ -2,6 +2,7 @@
 
 Использование:
     python3 send_email.py             # отправить последние output-файлы
+    python3 send_email.py --to user@example.com --xlsx output/report.xlsx
     python3 send_email.py --check     # только проверка SMTP-логина
 
 Требования: только стандартная библиотека.
@@ -73,16 +74,18 @@ def attach_file(msg: EmailMessage, path: Path) -> None:
 
 
 def build_message(env: dict, recipients: list[str], xlsx: Path | None,
-                  html_body: str, text_body: str,
-                  report_date: str | None = None) -> EmailMessage:
+                  html_body: str | None, text_body: str,
+                  report_date: str | None = None,
+                  subject: str | None = None) -> EmailMessage:
     sender = env["YANDEX_LOGIN"]
     msg = EmailMessage()
     rd = report_date or datetime.now().strftime("%Y-%m-%d")
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
-    msg["Subject"] = f"Хронометраж торфов — отчёт за {rd}"
+    msg["Subject"] = subject or f"Хронометраж торфов — отчёт за {rd}"
     msg.set_content(text_body)                       # text/plain (фолбэк)
-    msg.add_alternative(html_body, subtype="html")   # text/html
+    if html_body is not None:
+        msg.add_alternative(html_body, subtype="html")   # text/html
     if xlsx and xlsx.exists():
         attach_file(msg, xlsx)
     return msg
@@ -108,11 +111,12 @@ def log(msg: str) -> None:
 
 
 def main() -> int:
-    import json
-    import email_html
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true", help="только проверить SMTP-логин")
+    ap.add_argument("--to", action="append", default=[], help="получатель; можно указать несколько раз, заменяет recipients.txt")
     ap.add_argument("--xlsx", type=Path, help="путь к xlsx (по умолчанию — последний)")
+    ap.add_argument("--empty-body", action="store_true", help="отправить письмо без текста в теле")
+    ap.add_argument("--subject", help="тема письма")
     args = ap.parse_args()
 
     env = load_env()
@@ -132,7 +136,7 @@ def main() -> int:
             log(f"[ERR] SMTP-проверка не удалась: {e!r}")
             return 3
 
-    rcpts = load_recipients()
+    rcpts = args.to or load_recipients()
     if not rcpts:
         log(f"[ERR] список получателей пуст: {RCPT_FILE}")
         return 4
@@ -142,16 +146,24 @@ def main() -> int:
         log(f"[ERR] не найден xlsx в {OUT}")
         return 5
 
-    state = BASE / "state"
-    metrics = json.loads((state / "last_metrics.json").read_text(encoding="utf-8"))
-    note_p = state / "last_note.txt"
-    note = note_p.read_text(encoding="utf-8") if note_p.exists() else ""
-    alerts_p = state / "last_alerts.json"
-    alerts = json.loads(alerts_p.read_text(encoding="utf-8")) if alerts_p.exists() else []
-    html = email_html.build_html(metrics, note, alerts)
-    text = email_html.build_text(metrics, note, alerts)
+    if args.empty_body:
+        report_date = None
+        html = None
+        text = ""
+    else:
+        import json
+        import email_html
+        state = BASE / "state"
+        metrics = json.loads((state / "last_metrics.json").read_text(encoding="utf-8"))
+        note_p = state / "last_note.txt"
+        note = note_p.read_text(encoding="utf-8") if note_p.exists() else ""
+        alerts_p = state / "last_alerts.json"
+        alerts = json.loads(alerts_p.read_text(encoding="utf-8")) if alerts_p.exists() else []
+        report_date = metrics.get("report_date")
+        html = email_html.build_html(metrics, note, alerts)
+        text = email_html.build_text(metrics, note, alerts)
 
-    msg = build_message(env, rcpts, xlsx, html, text, metrics.get("report_date"))
+    msg = build_message(env, rcpts, xlsx, html, text, report_date, args.subject)
     try:
         send(env, msg)
     except Exception as e:
