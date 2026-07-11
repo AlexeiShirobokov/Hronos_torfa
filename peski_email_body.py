@@ -4,10 +4,9 @@
 Этот модуль строит компактное HTML-тело за отчётный день (Дата выдачи наряд-задания
 == report_date, как в сводной), чтобы не открывать вложение:
 
-  1. Пески по подразделениям (объём м³).
-  2. По промывочному прибору «Марка / Инв.№»: объём м³ + часы работы.
-  3. Топ причин простоя по часам + горизонтальная диаграмма (CSS-бары,
-     без картинок — надёжно во всех почтовых клиентах).
+  1. Промывка песков по подразделениям (по часам, как «Сводная_пески»).
+  2. Детализация по промывочным приборам (по часам; красным — час ниже нормы >20%).
+  3. Причины отклонений за последний час: прибор/подразделение, факт, норма, причина.
 
 Оформление — inline + <style> в духе email_html.py. Только stdlib + pandas.
 
@@ -45,6 +44,8 @@ STYLE = (
     ".pe td{padding:3px 8px;border:1px solid #d0d7de;font-size:13px}"
     ".pe td.n{text-align:right;font-variant-numeric:tabular-nums}"
     ".pe td.t{background:#eef2f8;font-weight:bold}"
+    ".pe td.bad{background:#f8caca;color:#8a1f1f;font-weight:bold}"
+    ".pe td.nowrap{white-space:nowrap}"
     ".pe td.z{background:#fafafa;color:#9aa6b2}"
     ".pe h2{margin:2px 0 2px;font-size:17px}"
     ".pe h3{margin:16px 0 4px;font-size:15px}"
@@ -135,6 +136,30 @@ def _pribor_label(df: pd.DataFrame) -> pd.Series:
     return (mark.where(mark.str.lower() != "nan", "") + " / " + inv).str.strip(" /")
 
 
+# Норма выработки промприбора, м³/час (по марке).
+# СБ-2.1/СБ2.1, ГИТ, СБ-1.7 → 120; ПБШ, ПКБШ → 60. Прочие (напр. ГГМ) — без нормы.
+NORM_120 = 120
+NORM_60 = 60
+DEVIATION_THRESHOLD = 0.20   # отклонение вниз более чем на 20% → подсветка
+
+
+def _pribor_norm(mark: str) -> int | None:
+    m = str(mark).upper().replace(" ", "").replace(" ", "").replace("-", "").replace(".", "")
+    if m.startswith("ПКБШ") or m.startswith("ПБШ"):
+        return NORM_60
+    if m.startswith("СБ") or m.startswith("ГИТ"):
+        return NORM_120
+    return None
+
+
+def _mark_of(prib_label: str) -> str:
+    return str(prib_label).split(" / ", 1)[0].strip()
+
+
+def _is_below_norm(value: float, norm: int | None) -> bool:
+    return norm is not None and 0 < value < norm * (1 - DEVIATION_THRESHOLD)
+
+
 def _table_pribor(day: pd.DataFrame) -> str:
     sand = day[day[COL_PER].astype(str).str.strip().isin(SAND_PEREDELS)].copy()
     if sand.empty:
@@ -156,6 +181,8 @@ def _table_pribor(day: pd.DataFrame) -> str:
                        key=lambda p: -float(tot.get((u, p), 0)))
         columns += [(u, p) for p in pribs]
 
+    norms = [_pribor_norm(_mark_of(p)) for (_, p) in columns]
+
     # многоярусная шапка: подразделение (span) → прибор
     h1 = '<tr><th rowspan="2">Дата / час</th>'
     for u in units:
@@ -165,10 +192,17 @@ def _table_pribor(day: pd.DataFrame) -> str:
     h1 += '<th rowspan="2">Итого, м³</th></tr>'
     h2 = "<tr>" + "".join(f"<th>{escape(p)}</th>" for (_, p) in columns) + "</tr>"
 
-    def cells(valmap, cls="n"):
-        vals = [valmap.get(col, 0.0) for col in columns]
-        s = "".join(f'<td class="{cls}">{_fmt_int(v)}</td>' for v in vals)
-        return s + f'<td class="{cls} t">{_fmt_int(sum(vals))}</td>'
+    def cells(valmap, cls="n", highlight=False):
+        out = []
+        for i, col in enumerate(columns):
+            v = valmap.get(col, 0.0)
+            klass = cls
+            if highlight and _is_below_norm(v, norms[i]):
+                klass = (cls + " bad").strip()
+            out.append(f'<td class="{klass}">{_fmt_int(v)}</td>')
+        total = sum(valmap.get(col, 0.0) for col in columns)
+        out.append(f'<td class="{cls} t">{_fmt_int(total)}</td>')
+        return "".join(out)
 
     rows = []
     grand: dict[tuple[str, str], float] = {}
@@ -183,79 +217,81 @@ def _table_pribor(day: pd.DataFrame) -> str:
         rows.append(f'<tr><td class="t">{dlabel}</td>{cells(daymap, "n t")}</tr>')
         for t in sorted(dd["_t"].dropna().unique()):
             hmap = {col: float(pv.get((col[0], col[1], t), 0.0)) for col in columns}
-            rows.append(f"<tr><td>{escape(t)}</td>{cells(hmap)}</tr>")
+            rows.append(f'<tr><td>{escape(t)}</td>{cells(hmap, highlight=True)}</tr>')
     rows.append(f'<tr><td class="t">Общий итог</td>{cells(grand, "n t")}</tr>')
-    return f"<table>{h1}{h2}{''.join(rows)}</table>"
+    note = ('<p class="sub">Красным — час, когда прибор отработал ниже нормы более чем '
+            f'на {int(DEVIATION_THRESHOLD * 100)}% (норма 120 м³/ч — СБ, ГИТ; 60 м³/ч — ПБШ, ПКБШ).</p>')
+    return f"<table>{h1}{h2}{''.join(rows)}</table>{note}"
 
 
-# ── 3. Причины простоя с начала промывочного сезона + диаграмма ───────────────
-def _idle_reasons(df: pd.DataFrame, top: int = 10) -> tuple[pd.Series, pd.Timestamp | None]:
-    """Причины простоя по всему реестру (сезон), топ по часам. Возвращает (серия, дата начала)."""
-    idle = df[df[COL_PER].astype(str).str.strip() == IDLE_PEREDEL].copy()
+# ── 3. Причины простоя по приборам: под каждым прибором «Причина» + «м³» ──────
+def _table_idle_grid(day: pd.DataFrame) -> str:
+    d = day.copy()
+    d[COL_UNIT] = d[COL_UNIT].astype(str).str.strip()
+    d["_fact"] = pd.to_datetime(d[COL_FACT], errors="coerce")
+    d["_t"] = d[COL_TIME].astype(str).str.strip()
+    d["_prib"] = _pribor_label(d)
+
+    idle = d[d[COL_PER].astype(str).str.strip() == IDLE_PEREDEL].copy()
+    idle["_reason"] = idle[COL_NOTE].astype(str).str.strip().replace({"nan": "", "None": ""})
+    idle = idle[(idle["_reason"] != "") & (idle["_reason"].str.lower() != "обед")]
+    idle = idle[idle["_prib"].str.replace("/", "").str.strip() != ""]     # только с прибором
+    idle = idle.dropna(subset=["_fact"])
+    idle = idle[idle["_t"].str.match(r"^\d{1,2}:\d{2}$")]
     if idle.empty:
-        return pd.Series(dtype=int), None
-    reason = (idle[COL_NOTE].astype(str).str.strip()
-              .replace({"nan": "—", "None": "—", "": "—"}))
-    reason = reason[reason.str.lower() != "обед"]          # обед (плановый) не показываем
-    ser = reason.groupby(reason).size().sort_values(ascending=False).head(top)
-    start = pd.to_datetime(idle[COL_FACT], errors="coerce").min()
-    return ser, start
+        return '<p class="sub">Простоев с указанием прибора за отчёт нет.</p>'
 
+    # колонки: подразделение → прибор (как в п.2), среди приборов с простоем
+    units = _sand_units(idle)
+    pribs_by_unit = {u: sorted({p for uu, p in zip(idle[COL_UNIT], idle["_prib"]) if uu == u})
+                     for u in units}
+    columns = [(u, p) for u in units for p in pribs_by_unit[u]]
 
-def _table_idle(reasons: pd.Series) -> str:
-    if reasons.empty:
-        return '<p class="sub">За день простоев не зафиксировано.</p>'
-    head = "<tr><th>Причина простоя</th><th>Часы</th></tr>"
-    rows = [f"<tr><td>{escape(str(r))}</td><td class=\"n\">{_fmt_int(h)}</td></tr>"
-            for r, h in reasons.items()]
-    rows.append(f'<tr><td class="t">Итого</td>'
-                f'<td class="n t">{_fmt_int(int(reasons.sum()))}</td></tr>')
-    return f"<table>{head}{''.join(rows)}</table>"
+    # объём песков по (Дата.Факт, час, подразделение, прибор) — для колонки «м³»
+    sand = d[d[COL_PER].astype(str).str.strip().isin(SAND_PEREDELS)]
+    volmap = sand.groupby(["_fact", "_t", COL_UNIT, "_prib"])[COL_VOL].sum()
+    rmap = (idle.groupby(["_fact", "_t", COL_UNIT, "_prib"])["_reason"]
+            .apply(lambda s: "; ".join(dict.fromkeys(s))))
 
+    # трёхъярусная шапка: подразделение → прибор → (Причина | м³)
+    h1 = '<tr><th rowspan="3">Дата / час</th>'
+    for u in units:
+        h1 += f'<th colspan="{2 * len(pribs_by_unit[u])}">{escape(u)}</th>'
+    h1 += "</tr>"
+    h2 = "<tr>" + "".join(f'<th colspan="2">{escape(p)}</th>' for (_, p) in columns) + "</tr>"
+    h3 = "<tr>" + "".join('<th>Причина простоя</th><th>м³</th>' for _ in columns) + "</tr>"
 
-def _chart_idle(reasons: pd.Series) -> str:
-    """Горизонтальный бар-чарт (не таблица): подпись, полоса на дорожке, значение."""
-    if reasons.empty:
-        return ""
-    mx = int(reasons.max()) or 1
     rows = []
-    for r, h in reasons.items():
-        pct = max(3, int(round(100 * h / mx)))
-        rows.append(
-            '<div style="margin:8px 0">'
-            f'<div style="font-size:12px;color:#24292f;margin-bottom:3px">{escape(str(r))}</div>'
-            '<span style="display:inline-block;width:360px;max-width:72%;height:15px;'
-            'background:#eef2f8;border-radius:3px;vertical-align:middle">'
-            f'<span style="display:block;height:15px;width:{pct}%;background:#305496;'
-            'border-radius:3px"></span></span>'
-            f'<span style="color:#305496;font-weight:bold;font-size:12px;margin-left:8px;'
-            f'vertical-align:middle">{_fmt_int(h)} ч</span>'
-            "</div>"
-        )
-    return '<div style="margin:4px 0 2px">' + "".join(rows) + "</div>"
+    for fact in sorted(idle["_fact"].dropna().unique()):
+        sub = idle[idle["_fact"] == fact]
+        dshort = pd.Timestamp(fact).strftime("%d.%m")
+        for t in sorted(sub["_t"].unique()):
+            tds = []
+            for (u, p) in columns:
+                r = rmap.get((fact, t, u, p), "")
+                v = float(volmap.get((fact, t, u, p), 0.0))
+                rcell = f'<td class="bad">{escape(r)}</td>' if r else "<td></td>"
+                vcell = f'<td class="n">{_fmt_int(v)}</td>' if v else '<td class="n z"></td>'
+                tds.append(rcell + vcell)
+            rows.append(f'<tr><td class="nowrap">{t} · {dshort}</td>{"".join(tds)}</tr>')
+    return f"<table>{h1}{h2}{h3}{''.join(rows)}</table>"
 
 
 def build_html(df: pd.DataFrame, report_date: str) -> str:
     day = _day_slice(df, report_date)
-    reasons, season_start = _idle_reasons(df)
-    season_lbl = (f" с начала сезона (с {season_start.strftime('%d.%m.%Y')})"
-                  if season_start is not None else " с начала сезона")
     parts = [
         f"<style>{STYLE}</style>",
         '<div class="pe">',
         f"<h2>Хронометраж транспортировки песков</h2>",
         f'<p class="sub">Отчёт за {escape(_short_date(report_date))}</p>',
-        "<h3>1. Пески по подразделениям</h3>",
+        "<h3>1. Промывка песков по подразделениям</h3>",
         _table_units(day),
-        "<h3>2. Пески по промывочным приборам</h3>",
+        "<h3>2. Детализация по промывочным приборам</h3>",
         _table_pribor(day) or '<p class="sub">Нет данных по приборам.</p>',
-        f"<h3>3. Причины простоя{season_lbl}</h3>",
-        _table_idle(reasons),
+        "<h3>3. Причины простоя по приборам</h3>",
+        _table_idle_grid(day),
+        "</div>",
     ]
-    chart = _chart_idle(reasons)
-    if chart:
-        parts += ["<h3>Диаграмма причин простоя</h3>", chart]
-    parts.append("</div>")
     return "".join(parts)
 
 
