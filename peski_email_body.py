@@ -137,7 +137,8 @@ def _pribor_label(df: pd.DataFrame) -> pd.Series:
 
 
 # Норма выработки промприбора, м³/час (по марке).
-# СБ-2.1/СБ2.1, ГИТ, СБ-1.7 → 120; ПБШ, ПКБШ → 60. Прочие (напр. ГГМ) — без нормы.
+# СБ-2.1/СБ2.1 (как ГИТ) и ГИТ → 120; СБ-1.7 (как ПКБШ), ПБШ, ПКБШ → 60.
+# Прочие (напр. ГГМ) — без нормы.
 NORM_120 = 120
 NORM_60 = 60
 DEVIATION_THRESHOLD = 0.20   # отклонение вниз более чем на 20% → подсветка
@@ -145,10 +146,10 @@ DEVIATION_THRESHOLD = 0.20   # отклонение вниз более чем �
 
 def _pribor_norm(mark: str) -> int | None:
     m = str(mark).upper().replace(" ", "").replace(" ", "").replace("-", "").replace(".", "")
-    if m.startswith("ПКБШ") or m.startswith("ПБШ"):
-        return NORM_60
-    if m.startswith("СБ") or m.startswith("ГИТ"):
-        return NORM_120
+    if m.startswith("ПКБШ") or m.startswith("ПБШ") or m.startswith("СБ1"):
+        return NORM_60      # ПБШ, ПКБШ, СБ-1.7 — норма 60
+    if m.startswith("СБ2") or m.startswith("ГИТ"):
+        return NORM_120     # СБ-2.1, ГИТ — норма 120
     return None
 
 
@@ -220,7 +221,8 @@ def _table_pribor(day: pd.DataFrame) -> str:
             rows.append(f'<tr><td>{escape(t)}</td>{cells(hmap, highlight=True)}</tr>')
     rows.append(f'<tr><td class="t">Общий итог</td>{cells(grand, "n t")}</tr>')
     note = ('<p class="sub">Красным — час, когда прибор отработал ниже нормы более чем '
-            f'на {int(DEVIATION_THRESHOLD * 100)}% (норма 120 м³/ч — СБ, ГИТ; 60 м³/ч — ПБШ, ПКБШ).</p>')
+            f'на {int(DEVIATION_THRESHOLD * 100)}% (норма 120 м³/ч — СБ-2.1, ГИТ; '
+            '60 м³/ч — СБ-1.7, ПБШ, ПКБШ).</p>')
     return f"<table>{h1}{h2}{''.join(rows)}</table>{note}"
 
 
@@ -232,7 +234,11 @@ def _table_idle_grid(day: pd.DataFrame) -> str:
     d["_t"] = d[COL_TIME].astype(str).str.strip()
     d["_prib"] = _pribor_label(d)
 
-    idle = d[d[COL_PER].astype(str).str.strip() == IDLE_PEREDEL].copy()
+    # Причины берём из «Примечания» строк песка + «Простой»: Дражный пишет причину
+    # в строках «Простой», остальные подразделения — в «Примечании» строк песка
+    # (там же заполнен промприбор). Так пункт 3 охватывает все подразделения.
+    scope = SAND_PEREDELS + [IDLE_PEREDEL]
+    idle = d[d[COL_PER].astype(str).str.strip().isin(scope)].copy()
     idle["_reason"] = idle[COL_NOTE].astype(str).str.strip().replace({"nan": "", "None": ""})
     idle = idle[(idle["_reason"] != "") & (idle["_reason"].str.lower() != "обед")]
     idle = idle[idle["_prib"].str.replace("/", "").str.strip() != ""]     # только с прибором
