@@ -601,6 +601,7 @@ static void ApplyPivotPageFilters(
         );
         ApplyAllPivotItems(pivotFields[cols.Time - 1], filterIndexes.TimeItemCount);
         ApplyAllPivotItems(pivotFields[cols.DateFact - 1], filterIndexes.DateFactItemCount);
+        ApplyColumnLayout(root, ns, pivotFields, cols, data);
         ReplacePageFields(root, ns, cols.DateIssue - 1, filterIndexes.DateItemIndex, cols.Peredel - 1);
         files[part] = Utf8(XmlToString(doc));
     }
@@ -1057,6 +1058,62 @@ static void ReplacePageFields(XElement pivotRoot, XNamespace ns, int dateFieldIn
             new XAttribute("hier", "-1")
         )
     );
+}
+
+// Колонки сводной: подразделение → промывочный прибор (Инв.№) вторым уровнем;
+// промежуточные итоги (подразделение, Дата.Факт) убраны; общий итог только по
+// столбцам (нижняя строка). Кэш пересобирается при открытии (refreshOnLoad=1),
+// поэтому items прибора Excel строит сам — здесь только раскладка полей.
+static void ApplyColumnLayout(XElement root, XNamespace ns, List<XElement> pivotFields,
+    RequiredColumns cols, object[,] data)
+{
+    var headers = ReadHeadersFromData(data);
+    var invIdx = Array.FindIndex(headers, h => HeaderEquals(h, "Инв. № промывочного прибора"));
+    if (invIdx >= 0 && invIdx < pivotFields.Count)
+    {
+        var inv = pivotFields[invIdx];
+        inv.SetAttributeValue("axis", "axisCol");
+        inv.SetAttributeValue("showAll", "0");
+        DisableFieldSubtotal(inv, ns);
+        var colFields = root.Element(ns + "colFields");
+        if (colFields is not null &&
+            !colFields.Elements(ns + "field").Any(f =>
+                (string?)f.Attribute("x") == invIdx.ToString(CultureInfo.InvariantCulture)))
+        {
+            colFields.Add(new XElement(ns + "field", new XAttribute("x", invIdx)));
+            colFields.SetAttributeValue("count",
+                colFields.Elements(ns + "field").Count().ToString(CultureInfo.InvariantCulture));
+        }
+    }
+    if (cols.Unit - 1 >= 0 && cols.Unit - 1 < pivotFields.Count)
+        DisableFieldSubtotal(pivotFields[cols.Unit - 1], ns);
+    if (cols.DateFact - 1 >= 0 && cols.DateFact - 1 < pivotFields.Count)
+        DisableFieldSubtotal(pivotFields[cols.DateFact - 1], ns);
+    // Общий итог только для столбцов (нижняя строка «Общий итог» с итогом по каждому
+    // прибору за все часы) — это ось строк: rowGrandTotals=1. Правый столбец (итог по
+    // каждому часу поперёк приборов) — ось столбцов: colGrandTotals=0, убираем.
+    root.SetAttributeValue("rowGrandTotals", "1");
+    root.SetAttributeValue("colGrandTotals", "0");
+}
+
+// Убирает промежуточный итог поля: не только defaultSubtotal=0 на самом поле, но и
+// явный элемент <item t="default"/> в его <items>. Без удаления item Excel рисует
+// подытог даже при defaultSubtotal=0 (item-коллекция важнее атрибута). Порядок
+// остальных элементов сохраняется — это порядок вывода подразделений/дат в шапке.
+static void DisableFieldSubtotal(XElement pivotField, XNamespace ns)
+{
+    pivotField.SetAttributeValue("defaultSubtotal", "0");
+    var items = pivotField.Element(ns + "items");
+    if (items is null)
+        return;
+    foreach (var it in items.Elements(ns + "item")
+                 .Where(i => (string?)i.Attribute("t") == "default").ToList())
+        it.Remove();
+    var remaining = items.Elements(ns + "item").Count();
+    if (remaining == 0)
+        items.Remove();
+    else
+        items.SetAttributeValue("count", remaining.ToString(CultureInfo.InvariantCulture));
 }
 
 static string ExcelDate(DateTime value) => value.Date.ToString("yyyy-MM-dd'T'00:00:00", CultureInfo.InvariantCulture);
